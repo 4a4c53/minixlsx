@@ -1,6 +1,6 @@
 {
 	"name": "minixlsx",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Librería mínima sin dependencias para crear y leer archivos Excel (.xlsx) en Node.js",
 	"keywords": [
 		"excel",
