@@ -9,8 +9,14 @@
 		"xlsx",
 		"zero-dependencies"
 	],
+	"homepage": "https://github.com/4a4c53/minixlsx#readme",
+	"bugs": "https://github.com/4a4c53/minixlsx/issues",
 	"license": "MIT",
 	"author": "José Luis Silva <joseluis@4a4c53.com> (http://4a4c53.com)",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/4a4c53/minixlsx.git"
+	},
 	"files": [
 		"dist"
 	],
