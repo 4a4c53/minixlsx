@@ -1,89 +1,265 @@
 # minixlsx
 
-Librería mínima para **crear, leer y extraer datos** de archivos Excel (`.xlsx`) en Node.js, escrita **100% en TypeScript** y con **cero dependencias de runtime**.
+A tiny, zero-dependency library for reading and writing Excel (`.xlsx`) files in Node.js.
 
-## Stack
+Written in TypeScript with zero runtime dependencies.
 
-- **TypeScript nativo sobre Node.js ≥ 22.18.** Node ejecuta los `.ts` directamente (type stripping), así que no hay paso de build: el código fuente es el código que corre. `tsc` se usa solo para comprobar tipos (`noEmit`).
-- Un `.xlsx` es un ZIP que contiene XMLs (formato OOXML / SpreadsheetML), y todo lo necesario ya viene en Node:
-  - `node:zlib` — compresión/descompresión deflate del contenedor ZIP.
-  - `node:fs` — lectura/escritura de archivos.
-  - `node:test` + `node:assert` — suite de tests sin frameworks.
-- **ZIP propio** (`src/zip.ts`): lector y escritor del formato ZIP clásico (~150 líneas), en lugar de depender de `jszip`.
-- **XML dirigido**: serialización por plantillas y parsing con expresiones regulares acotadas al subconjunto SpreadsheetML que usa Excel, en lugar de un parser XML genérico.
-- **Formateo con [oxfmt](https://oxc.rs)** (el formateador de oxc, escrito en Rust); configuración en `.oxfmtrc.json`.
+## Features
 
-Las únicas dependencias son de desarrollo: `typescript` (typecheck), `@types/node` y `oxfmt`.
+- 📄 Read and write `.xlsx` files
+- 📊 Multiple worksheets
+- 📅 Automatic Excel ↔ JavaScript `Date` conversion
+- 🧮 Formula support
+- 📦 Zero runtime dependencies
+- ⚡ Tiny implementation
+- 🌍 Unicode support
+- ♻️ Read → modify → write workflow
+- 🚀 Works on Node.js ≥ 22.18
 
-## Uso
+---
 
-### Crear un archivo
+## Why minixlsx?
+
+Most Excel libraries aim to support the entire spreadsheet feature set: styling, charts, images, pivot tables, conditional formatting, and much more.
+
+If all you need is to export application data—such as customers, invoices, orders, or reports—to an `.xlsx` file, that extra complexity often isn't necessary.
+
+minixlsx focuses on a single goal:
+
+> Read and write Excel data with a simple API and zero runtime dependencies.
+
+It intentionally implements the data layer of Excel workbooks while leaving presentation features (styles, charts, images, etc.) out of scope.
+
+---
+
+## Installation
+
+```sh
+npm install minixlsx
+```
+
+or
+
+```sh
+pnpm add minixlsx
+```
+
+---
+
+## Quick Start
+
+### Create a workbook
 
 ```ts
 import { Workbook } from 'minixlsx'
 
 const wb = new Workbook()
-const hoja = wb.addSheet('Ventas')
+const sheet = wb.addSheet('Sales')
 
-hoja.addRow(['Producto', 'Cantidad', 'Fecha', 'Pagado'])
-hoja.addRow(['Manzanas', 10, new Date(2026, 6, 2), true])
-hoja.setCell('E2', { formula: 'B2*1.21' }) // fórmulas
-hoja.setCellAt(5, 1, 'fila 5, columna A') // por coordenadas (desde 1)
+sheet.addRow(['Product', 'Quantity', 'Date', 'Paid'])
+sheet.addRow(['Apples', 10, new Date(2026, 6, 2), true])
 
-wb.writeFile('ventas.xlsx')
-const buffer = wb.toBuffer() // o como Buffer en memoria
+sheet.setCell('E2', { formula: 'B2*1.21' })
+sheet.setCellAt(5, 1, 'Row 5, column A')
+
+wb.writeFile('sales.xlsx')
+
+// Or keep everything in memory
+const buffer = wb.toBuffer()
 ```
 
-### Leer y extraer datos
+### Read an existing workbook
 
 ```ts
 import { readFile, read } from 'minixlsx'
 
-const wb = readFile('ventas.xlsx') // o read(buffer)
+const wb = readFile('sales.xlsx')
+// or
+const wb2 = read(buffer)
 
-wb.sheetNames // ['Ventas']
-const hoja = wb.sheet('Ventas') // o wb.sheet(0)
+wb.sheetNames
 
-hoja.toRows() // [['Producto', 'Cantidad', ...], ['Manzanas', 10, ...]]
-hoja.toObjects() // [{ Producto: 'Manzanas', Cantidad: 10, ... }]
-hoja.cell('B2') // 10
-hoja.formula('E2') // 'B2*1.21'
-hoja.rowCount
-hoja.colCount
+const sheet = wb.sheet('Sales')
+// or
+const firstSheet = wb.sheet(0)
+
+sheet.toRows()
+sheet.toObjects()
+
+sheet.cell('B2')
+sheet.formula('E2')
+
+sheet.rowCount
+sheet.colCount
 ```
 
-Lo leído es un `Workbook` normal: se puede modificar y volver a guardar. Los tipos (`CellValue`, `CellInput`, `Sheet`, `Workbook`) se exportan desde el propio código fuente en desarrollo, y como `.d.ts` generados en el paquete publicado.
+Workbooks loaded from disk are fully editable and can be modified and written back.
 
-## Tipos de datos
+---
 
-| TypeScript            | En Excel                                                                    |
-| --------------------- | --------------------------------------------------------------------------- |
-| `string`              | texto (shared strings, deduplicado)                                         |
-| `number`              | número                                                                      |
-| `boolean`             | booleano                                                                    |
-| `Date`                | fecha con formato `dd/mm/yyyy` (o fecha y hora si tiene componente horario) |
-| `{ formula, value? }` | fórmula (con valor cacheado opcional)                                       |
-| `null` / `undefined`  | celda vacía                                                                 |
+## Roundtrip Example
 
-Al leer, las celdas con formato numérico de fecha (incorporado o personalizado) se convierten automáticamente a `Date`.
+```ts
+import { readFile } from 'minixlsx'
 
-## Alcance
+const wb = readFile('sales.xlsx')
+const sales = wb.sheet('Sales')
+if (!sales) throw new Error('Missing sheet: Sales')
 
-Cubre el ciclo datos ⇄ archivo: valores, tipos, fechas, fórmulas, varias hojas, Unicode y caracteres especiales. No implementa estilos visuales (colores, fuentes, bordes), celdas combinadas, gráficos, ni el formato antiguo `.xls`. Archivos hasta 4 GB (sin ZIP64).
+sales.setCell('B2', 12)
+sales.setCell('F2', { formula: 'B2*E2' })
 
-Notas:
+wb.writeFile('sales.updated.xlsx')
+```
 
-- Node no aplica type stripping a paquetes dentro de `node_modules`, así que el paquete npm se publica compilado: `prepublishOnly` emite JS + `.d.ts` a `dist/` (`pnpm build`) y `scripts/fix-dist-imports.ts` normaliza los imports `#` a relativos, de modo que el paquete publicado funciona con Node puro y cualquier tooling. En desarrollo el TypeScript corre tal cual, sin build.
-- Como todos los lectores de `.xlsx`, hereda del formato el falso año bisiesto de 1900, por lo que fechas entre el 1 de enero y el 28 de febrero de 1900 quedan desplazadas un día.
+---
 
-## Desarrollo
+## API at a Glance
+
+```ts
+type CellValue = string | number | boolean | Date | null
+
+type CellInput =
+	| CellValue
+	| undefined
+	| { value?: CellValue; formula?: string | null }
+
+class Workbook {
+	addSheet(name?: string): Sheet
+	sheet(nameOrIndex: string | number): Sheet | null
+	get sheetNames(): string[]
+	toBuffer(): Buffer
+	writeFile(path: string): this
+}
+
+class Sheet {
+	setCell(ref: string, value: CellInput): this
+	setCellAt(row: number, col: number, value: CellInput): this
+	addRow(values: CellInput[]): this
+	addRows(rows: CellInput[][]): this
+	cell(ref: string): CellValue
+	cellAt(row: number, col: number): CellValue
+	formula(ref: string): string | null
+	get rowCount(): number
+	get colCount(): number
+	toRows(): CellValue[][]
+	toObjects(opts?: { headerRow?: number }): Record<string, CellValue>[]
+}
+
+read(data: Buffer | Uint8Array): Workbook
+readFile(path: string): Workbook
+```
+
+---
+
+## Compatibility
+
+| Item          | Status        |
+| ------------- | ------------- |
+| Node.js       | ≥ 22.18       |
+| Modules       | ESM           |
+| File format   | `.xlsx`       |
+| Browser       | Not supported |
+| Legacy `.xls` | Not supported |
+
+---
+
+## Supported Data Types
+
+| TypeScript            | Excel                           |
+| --------------------- | ------------------------------- |
+| `string`              | Text (shared strings)           |
+| `number`              | Number                          |
+| `boolean`             | Boolean                         |
+| `Date`                | Date or date-time               |
+| `{ formula, value? }` | Formula (optional cached value) |
+| `null` / `undefined`  | Empty cell                      |
+
+When reading files, cells formatted as Excel dates (built-in or custom date formats) are automatically converted to JavaScript `Date` objects.
+
+---
+
+## Supported
+
+- Cell values
+- Formulas
+- Dates
+- Multiple worksheets
+- Unicode
+- Read → modify → write
+- `.xlsx` (Office Open XML)
+
+## Not Supported
+
+- Cell styling (fonts, colors, borders, fills, etc.)
+- Preserving existing workbook styles or layout metadata on write
+- Merged cells
+- Charts
+- Images
+- Pivot tables
+- Legacy `.xls`
+- ZIP64 archives (>4 GB)
+
+---
+
+## Validation
+
+Writing a workbook throws an error if:
+
+- A sheet name is invalid or duplicated (sheet names are case-insensitive, limited to 31 characters, and cannot contain `\ / ? * [ ] :`).
+- A cell contains `NaN` or `Infinity`, since Excel cannot represent those values.
+- The workbook contains no worksheets.
+
+---
+
+## Design
+
+minixlsx is intentionally built on top of the Node.js standard library.
+
+Instead of relying on generic ZIP and XML libraries, it implements only the subset of the OOXML format required for Excel workbooks. This keeps the library small, fast, and dependency-free.
+
+- Native TypeScript
+- Custom ZIP implementation (~150 LOC)
+- SpreadsheetML-specific XML parser and serializer
+- Zero runtime dependencies
+
+Development dependencies:
+
+- TypeScript
+- @types/node
+- oxfmt
+- oxlint
+
+---
+
+## Development
+
+Node.js ≥ 22.18 runs the source TypeScript directly using built-in type stripping, so there is no build step during development.
+
+`tsc` is used only for static type checking.
 
 ```sh
-pnpm install           # dependencias de desarrollo (el runtime no tiene ninguna)
-pnpm test              # 20 tests con node:test (ejecuta los .ts directamente)
-pnpm typecheck         # tsc --noEmit
-pnpm fmt               # formatear con oxfmt
-pnpm fmt:check         # comprobar formato sin escribir
-pnpm build             # compila a dist/ (JS + .d.ts) para publicar; lo ejecuta prepublishOnly
-node examples/demo.ts  # genera y relee examples/demo.xlsx
+pnpm install
+
+pnpm test
+pnpm typecheck
+pnpm fmt
+pnpm fmt:check
+pnpm build
+
+node examples/demo.ts
 ```
+
+---
+
+## Caveats
+
+- npm packages cannot rely on Node's built-in TypeScript type stripping, so the published package is compiled to JavaScript during `prepublishOnly` together with generated `.d.ts` files.
+- Like every Excel implementation, minixlsx follows Excel's historical 1900 leap-year bug. Dates between **1900-01-01** and **1900-02-28** are shifted by one day to match Excel's behavior.
+- Date conversion uses local wall-clock components. Serializing a workbook in one timezone and opening it in another may change the displayed time for date-time values.
+
+---
+
+## License
+
+MIT
