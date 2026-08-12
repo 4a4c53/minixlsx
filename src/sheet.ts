@@ -1,4 +1,4 @@
-import { colToName, parseRef } from '#minixlsx/utils'
+import { colToName, MAX_COLS, MAX_ROWS, parseRef } from '#minixlsx/utils'
 
 /** Valor que puede contener una celda. */
 export type CellValue = string | number | boolean | Date | null
@@ -7,8 +7,8 @@ export type CellValue = string | number | boolean | Date | null
 export type CellInput = CellValue | undefined | { value?: CellValue; formula?: string | null }
 
 interface CellData {
-	value: CellValue
 	formula: string | null
+	value: CellValue
 }
 
 /**
@@ -33,17 +33,20 @@ export class Sheet {
 
 	/** Asigna un valor por coordenadas (fila y columna desde 1). */
 	setCellAt(row: number, col: number, value: CellInput): this {
-		if (!Number.isInteger(row) || row < 1 || !Number.isInteger(col) || col < 1) {
+		if (!Number.isInteger(row) || row < 1 || row > MAX_ROWS || !Number.isInteger(col) || col < 1 || col > MAX_COLS) {
 			throw new RangeError(`Coordenadas de celda inválidas: fila ${row}, columna ${col}`)
 		}
 		let cell: CellData
 		if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
-			cell = { value: value.value ?? null, formula: value.formula ?? null }
+			cell = { formula: value.formula ?? null, value: value.value ?? null }
 		} else {
-			cell = { value: value ?? null, formula: null }
+			cell = { formula: null, value: value ?? null }
 		}
 		if (typeof cell.value === 'number' && !Number.isFinite(cell.value)) {
 			throw new TypeError(`Valor numérico no representable en Excel: ${cell.value}`)
+		}
+		if (cell.value instanceof Date && Number.isNaN(cell.value.getTime())) {
+			throw new TypeError('Fecha inválida (Invalid Date) no representable en Excel')
 		}
 		const key = `${row},${col}`
 		if (cell.value == null && !cell.formula) {

@@ -1,9 +1,32 @@
 import { readFileSync } from 'node:fs'
-import { unzipSync } from '#minixlsx/zip'
-import { attr, decodeText, unesc } from '#minixlsx/xml'
-import { Workbook } from '#minixlsx/workbook'
-import type { CellValue, Sheet } from '#minixlsx/sheet'
+
+import { isSheetNameError } from '#minixlsx/sheet-name'
 import { nameToCol, serialToDate } from '#minixlsx/utils'
+import { Workbook } from '#minixlsx/workbook'
+import { attr, decodeText, unesc } from '#minixlsx/xml'
+import { unzipSync } from '#minixlsx/zip'
+
+import type { CellValue, Sheet } from '#minixlsx/sheet'
+
+/**
+ * Qué hacer cuando el archivo contiene un nombre de hoja que viola las reglas de Excel
+ * (vacío, más de 31 caracteres, caracteres prohibidos `\ / ? * [ ] :`, o duplicado sin
+ * distinguir mayúsculas). Las mismas reglas se aplican al crear hojas con `Workbook.addSheet`.
+ *
+ * - `'error'` (predeterminado): aborta la lectura con un error descriptivo que indica el
+ *   índice de la hoja, su nombre y la regla infringida.
+ *
+ * `'preserve'` está reservado para una futura versión de minixlsx que conservaría el nombre
+ * tal cual, sin sanear ni renombrar automáticamente, permitiendo inspeccionar o reparar el
+ * libro después de leerlo. Todavía no está implementado: seleccionarlo lanza un error
+ * explícito. El comportamiento predeterminado ('error') de la serie 0.2 no cambiará cuando
+ * 'preserve' se implemente.
+ */
+export type InvalidSheetNamesMode = 'error' | 'preserve'
+
+export interface ReadOptions {
+	invalidSheetNames?: InvalidSheetNamesMode
+}
 
 // numFmtId incorporados que Excel muestra como fecha u hora.
 const BUILTIN_DATE_FMTS = new Set([
@@ -27,7 +50,7 @@ function dirname(p: string): string {
 
 function resolvePath(base: string, target: string): string {
 	if (target.startsWith('/')) return target.slice(1)
-	const parts = (base ? base + '/' + target : target).split('/')
+	const parts = (base ? `${base}/${target}` : target).split('/')
 	const out: string[] = []
 	for (const part of parts) {
 		if (part === '..') out.pop()
@@ -48,15 +71,27 @@ function parseRels(xml: string | null, baseDir: string): Map<string, string> {
 	return rels
 }
 
+/** Extrae el texto de los `<t>` de un nodo, ignorando las guías fonéticas `<rPh>` (furigana japonesa). */
+function extractText(inner: string): string {
+	const withoutPhonetics = inner.replace(/<rPh\b[\s\S]*?<\/rPh>/g, '')
+	let text = ''
+	for (const t of withoutPhonetics.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) text += decodeText(t[1])
+	return text
+}
+
 function parseSharedStrings(xml: string | null): string[] {
 	const strings: string[] = []
 	if (!xml) return strings
-	for (const m of xml.matchAll(/<si>([\s\S]*?)<\/si>/g)) {
-		let text = ''
-		for (const t of m[1].matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) text += decodeText(t[1])
-		strings.push(text)
-	}
+	for (const m of xml.matchAll(/<si>([\s\S]*?)<\/si>/g)) strings.push(extractText(m[1]))
 	return strings
+}
+
+/** Indica si el libro usa el sistema de fechas 1904 (típico de Excel para Mac). */
+function isDate1904(wbXml: string): boolean {
+	const m = /<workbookPr\b([^>]*?)\/?>/.exec(wbXml)
+	if (!m) return false
+	const v = attr(m[1], 'date1904')
+	return v === '1' || v === 'true'
 }
 
 /** Devuelve un Set con los índices de estilo (cellXfs) que representan fechas. */
@@ -82,26 +117,30 @@ function parseDateStyles(xml: string | null): Set<number> {
 	return dateStyles
 }
 
-function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set<number>): void {
+function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set<number>, epoch1904: boolean): void {
 	const rowRe = /<row\b([^>]*?)(\/>|>([\s\S]*?)<\/row>)/g
 	const cellRe = /<c\b([^>]*?)(\/>|>([\s\S]*?)<\/c>)/g
-	let rowMatch: RegExpExecArray | null
 	let lastRow = 0
 
-	while ((rowMatch = rowRe.exec(xml))) {
+	for (const rowMatch of xml.matchAll(rowRe)) {
 		const rAttr = attr(rowMatch[1], 'r')
 		const rowNum = rAttr ? +rAttr : lastRow + 1
 		lastRow = rowNum
 		const content = rowMatch[3] || ''
 
-		let cellMatch: RegExpExecArray | null
 		let lastCol = 0
-		cellRe.lastIndex = 0
-		while ((cellMatch = cellRe.exec(content))) {
+		for (const cellMatch of content.matchAll(cellRe)) {
 			const attrs = cellMatch[1]
 			const inner = cellMatch[3] || ''
 			const ref = attr(attrs, 'r')
-			const col = ref ? nameToCol(/^[A-Za-z]+/.exec(ref)![0]) : lastCol + 1
+			let col: number
+			if (ref) {
+				const colMatch = /^[A-Za-z]+/.exec(ref)
+				if (!colMatch) throw new Error(`Referencia de celda inválida en el XML: "${ref}"`)
+				col = nameToCol(colMatch[0])
+			} else {
+				col = lastCol + 1
+			}
 			lastCol = col
 
 			const type = attr(attrs, 't') ?? 'n'
@@ -117,17 +156,15 @@ function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set
 			} else if (type === 'b') {
 				value = vText === '1' || vText === 'true'
 			} else if (type === 'inlineStr') {
-				let text = ''
-				for (const t of inner.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) text += decodeText(t[1])
-				value = text
+				value = extractText(inner)
 			} else if (type === 'd') {
 				value = vText != null ? new Date(vText) : null
 			} else if (vText != null) {
 				const n = Number(vText)
-				value = dateStyles.has(style) ? serialToDate(n) : n
+				value = dateStyles.has(style) ? serialToDate(n, epoch1904) : n
 			}
 
-			const formula = fText != null && fText.length ? unesc(fText) : null
+			const formula = fText?.length ? unesc(fText) : null
 			if (value != null || formula) {
 				sheet.setCellAt(rowNum, col, formula ? { value, formula } : value)
 			}
@@ -136,7 +173,15 @@ function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set
 }
 
 /** Lee un libro desde un Buffer .xlsx. */
-export function read(data: Buffer | Uint8Array): Workbook {
+export function read(data: Buffer | Uint8Array, opts: ReadOptions = {}): Workbook {
+	const { invalidSheetNames = 'error' } = opts
+	if (invalidSheetNames === 'preserve') {
+		throw new Error(
+			'invalidSheetNames: "preserve" todavía no está implementado en minixlsx 0.2. ' +
+				'Use "error" (predeterminado) o consulte el roadmap del proyecto.',
+		)
+	}
+
 	const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
 	const files = unzipSync(buf)
 	const getXml = (name: string | null): string | null =>
@@ -171,22 +216,32 @@ export function read(data: Buffer | Uint8Array): Workbook {
 
 	const sst = parseSharedStrings(getXml(sstPath ?? resolvePath(wbDir, 'sharedStrings.xml')))
 	const dateStyles = parseDateStyles(getXml(stylesPath ?? resolvePath(wbDir, 'styles.xml')))
+	const epoch1904 = isDate1904(wbXml)
 
 	const wb = new Workbook()
 	for (const m of wbXml.matchAll(/<sheet\b([^>]*?)\/?>/g)) {
 		const name = attr(m[1], 'name')
 		const rId = attr(m[1], 'r:id') ?? attr(m[1], 'r:Id')
 		if (name == null) continue
-		const sheet = wb.addSheet(decodeText(name))
+		const decodedName = decodeText(name)
+		const index = wb.sheets.length
+		let sheet: Sheet
+		try {
+			sheet = wb.addSheet(decodedName)
+		} catch (err) {
+			const rule = isSheetNameError(err) ? ` [regla: ${err.rule}]` : ''
+			const reason = err instanceof Error ? err.message : String(err)
+			throw new Error(`Hoja inválida en el índice ${index} ("${decodedName}")${rule}: ${reason}`)
+		}
 		const sheetPath = rId ? (rels.get(rId) ?? null) : null
 		const sheetXml = getXml(sheetPath)
-		if (sheetXml) parseSheetXml(sheetXml, sheet, sst, dateStyles)
+		if (sheetXml) parseSheetXml(sheetXml, sheet, sst, dateStyles, epoch1904)
 	}
 	if (!wb.sheets.length) throw new Error('El libro no contiene hojas')
 	return wb
 }
 
 /** Lee un libro desde un archivo .xlsx. */
-export function readFile(path: string): Workbook {
-	return read(readFileSync(path))
+export function readFile(path: string, opts?: ReadOptions): Workbook {
+	return read(readFileSync(path), opts)
 }
