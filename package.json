@@ -11,18 +11,13 @@
 	],
 	"homepage": "https://github.com/4a4c53/minixlsx#readme",
 	"bugs": "https://github.com/4a4c53/minixlsx/issues",
-	"license": "MIT",
-	"author": "José Luis Silva <joseluis@4a4c53.com> (http://4a4c53.com)",
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/4a4c53/minixlsx.git"
 	},
-	"files": [
-		"dist"
-	],
+	"license": "MIT",
+	"author": "José Luis Silva <joseluis@4a4c53.com> (http://4a4c53.com)",
 	"type": "module",
-	"main": "./dist/src/index.js",
-	"types": "./dist/src/index.d.ts",
 	"imports": {
 		"#minixlsx/*": {
 			"minixlsx-dev": "./src/*.ts",
@@ -35,36 +30,40 @@
 			"default": "./dist/src/index.js"
 		}
 	},
+	"main": "./dist/src/index.js",
+	"types": "./dist/src/index.d.ts",
+	"files": [
+		"dist"
+	],
 	"scripts": {
-		"test": "node --conditions=minixlsx-dev --test",
-		"typecheck": "tsc",
-		"fmt": "oxfmt",
-		"fmt:check": "oxfmt --check",
-		"lint": "oxlint",
-		"lint:fix": "oxlint --fix",
 		"build": "tsc -p tsconfig.build.json",
+		"example": "node --conditions=minixlsx-dev examples/demo.ts",
+		"fmt": "biome format --write",
+		"fmt:check": "biome format",
+		"lint": "biome check",
+		"lint:fix": "biome check --write",
 		"prepack": "pnpm build",
-		"example": "node --conditions=minixlsx-dev examples/demo.ts"
+		"test": "node --conditions=minixlsx-dev --test",
+		"typecheck": "tsc"
 	},
 	"devDependencies": {
+		"@biomejs/biome": "2.5.8",
 		"@types/node": "26.1.0",
-		"oxfmt": "0.57.0",
-		"oxlint": "1.72.0",
 		"typescript": "6.0.3"
+	},
+	"packageManager": "pnpm@11.21.0+sha512.521705bce689924eac72f5a3587122f362689ef6571e55ba80076fd637c11132ecffada26fad4ea79c485bfddbfd3d5a2a5b05805a77e893de71ec8a6cca3bb1",
+	"engines": {
+		"node": ">=22"
 	},
 	"devEngines": {
 		"packageManager": {
 			"name": "pnpm",
-			"onFail": "download",
-			"version": "11.21.0"
+			"version": "11.21.0",
+			"onFail": "download"
 		},
 		"runtime": {
 			"name": "node",
 			"version": ">=22.18.0"
 		}
-	},
-	"engines": {
-		"node": ">=22"
-	},
-	"packageManager": "pnpm@11.21.0+sha512.521705bce689924eac72f5a3587122f362689ef6571e55ba80076fd637c11132ecffada26fad4ea79c485bfddbfd3d5a2a5b05805a77e893de71ec8a6cca3bb1"
+	}
 }

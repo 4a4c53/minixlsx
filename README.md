@@ -253,8 +253,7 @@ Development dependencies:
 
 - TypeScript
 - @types/node
-- oxfmt
-- oxlint
+- Biome (formatter + linter)
 
 ---
 
@@ -271,6 +270,7 @@ pnpm test
 pnpm typecheck
 pnpm fmt
 pnpm fmt:check
+pnpm lint
 pnpm build
 
 node -C minixlsx-dev examples/demo.ts
