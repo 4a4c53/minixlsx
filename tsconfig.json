@@ -10,7 +10,8 @@
 		"allowImportingTsExtensions": true,
 		"verbatimModuleSyntax": true,
 		"erasableSyntaxOnly": true,
-		"skipLibCheck": true
+		"skipLibCheck": true,
+		"customConditions": ["minixlsx-dev"]
 	},
-	"include": ["index.ts", "src/**/*.ts", "test/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts"]
+	"include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts"]
 }
