@@ -14,7 +14,7 @@ Written in TypeScript with zero runtime dependencies.
 - ⚡ Tiny implementation
 - 🌍 Unicode support
 - ♻️ Read → modify → write workflow
-- 🚀 Works on Node.js ≥ 22.18
+- 🚀 Works on Node.js ≥ 22
 
 ---
 
@@ -146,21 +146,25 @@ class Sheet {
 	toObjects(opts?: { headerRow?: number }): Record<string, CellValue>[]
 }
 
-read(data: Buffer | Uint8Array): Workbook
-readFile(path: string): Workbook
+read(data: Buffer | Uint8Array, opts?: ReadOptions): Workbook
+readFile(path: string, opts?: ReadOptions): Workbook
+
+interface ReadOptions {
+	invalidSheetNames?: 'error' | 'preserve' // default: 'error'
+}
 ```
 
 ---
 
 ## Compatibility
 
-| Item          | Status        |
-| ------------- | ------------- |
-| Node.js       | ≥ 22.18       |
-| Modules       | ESM           |
-| File format   | `.xlsx`       |
-| Browser       | Not supported |
-| Legacy `.xls` | Not supported |
+| Item          | Status                    |
+| ------------- | ------------------------- |
+| Node.js       | ≥ 22 (≥ 22.18 to develop) |
+| Modules       | ESM                       |
+| File format   | `.xlsx`                   |
+| Browser       | Not supported             |
+| Legacy `.xls` | Not supported             |
 
 ---
 
@@ -208,7 +212,29 @@ Writing a workbook throws an error if:
 
 - A sheet name is invalid or duplicated (sheet names are case-insensitive, limited to 31 characters, and cannot contain `\ / ? * [ ] :`).
 - A cell contains `NaN` or `Infinity`, since Excel cannot represent those values.
+- A cell contains an invalid `Date` (e.g. `new Date(NaN)`).
+- A cell's coordinates fall outside Excel's real grid (rows 1–1,048,576, columns A–XFD).
 - The workbook contains no worksheets.
+
+Reading a workbook throws a descriptive error instead of silently producing corrupt or incorrect data if:
+
+- The `.xlsx` container is not a valid ZIP, is truncated, has a corrupt CRC, contains duplicate parts, or requires ZIP64 (>4 GB entries), which minixlsx doesn't support.
+- A single compressed entry would decompress far beyond its declared size (a "zip bomb"-style archive).
+- A cell reference, sheet name, or date value in the XML is malformed.
+
+### Sheet names
+
+Sheet name rules (empty name, >31 characters, invalid characters, case-insensitive duplicates) are centralized and shared by every code path that produces a `Sheet`: `Workbook.addSheet`, reading, and writing (writing re-checks defensively, since `Workbook.sheets` is a mutable array).
+
+By default, `read()`/`readFile()` abort with a descriptive error the moment they encounter an invalid sheet name in the file — the error names the sheet's index, its name, and which specific rule was broken (`empty`, `too-long`, `invalid-chars`, or `duplicate`). Names are never silently renamed or sanitized.
+
+```ts
+interface ReadOptions {
+	invalidSheetNames?: 'error' | 'preserve' // default: 'error'
+}
+```
+
+`'preserve'` is reserved for a future minixlsx version that would keep the original name as-is (still without auto-renaming or sanitizing), so the workbook can be inspected or repaired after loading. It is **not implemented yet** in 0.2 — passing it throws immediately. When it lands, the default will remain `'error'`.
 
 ---
 
@@ -247,16 +273,48 @@ pnpm fmt
 pnpm fmt:check
 pnpm build
 
-node examples/demo.ts
+node -C minixlsx-dev examples/demo.ts
 ```
+
+### Toolchain
+
+The toolchain is pinned in `package.json`:
+
+- `devEngines.runtime` — developing requires Node.js ≥ 22.18, the first 22.x release with type stripping enabled by default. Consumers of the published (compiled) package only need Node.js ≥ 22.
+- `devEngines.packageManager` — pnpm, with `onFail: "download"` so pnpm fetches the pinned version automatically. Running `npm` commands in this repo fails with `EBADDEVENGINES` by design.
+- `packageManager` — kept alongside `devEngines` for Corepack users. pnpm itself ignores it when `devEngines.packageManager` is present (and prints a warning saying so); that warning is expected. When bumping pnpm, update both fields.
+
+### Internal imports and the `minixlsx-dev` condition
+
+Source files import each other through the `#minixlsx/*` subpath alias, declared with [conditional targets](https://nodejs.org/api/packages.html#subpath-imports) in `package.json`:
+
+```json
+"imports": {
+	"#minixlsx/*": {
+		"minixlsx-dev": "./src/*.ts",
+		"default": "./dist/src/*.js"
+	}
+}
+```
+
+With the `minixlsx-dev` condition active, the alias resolves to the TypeScript sources. By default it resolves to the compiled output in `dist/`, which is what the published package (its `.js` and `.d.ts` files keep the `#minixlsx/*` specifiers) needs — no import-rewriting step at build time.
+
+The pnpm scripts already activate the condition (`node --conditions=minixlsx-dev --test`), and `tsc` picks it up via `customConditions` in `tsconfig.json`. For ad-hoc runs, pass it yourself:
+
+```sh
+node -C minixlsx-dev examples/demo.ts
+```
+
+The standard `development` condition is avoided on purpose: bundlers such as Vite enable it automatically in dev mode, which would resolve the alias to the unpublished `src/*.ts` files and break consumers.
 
 ---
 
 ## Caveats
 
-- npm packages cannot rely on Node's built-in TypeScript type stripping, so the published package is compiled to JavaScript during `prepublishOnly` together with generated `.d.ts` files.
+- npm packages cannot rely on Node's built-in TypeScript type stripping, so the published package is compiled to JavaScript during `prepack` together with generated `.d.ts` files.
 - Like every Excel implementation, minixlsx follows Excel's historical 1900 leap-year bug. Dates between **1900-01-01** and **1900-02-28** are shifted by one day to match Excel's behavior.
 - Date conversion uses local wall-clock components. Serializing a workbook in one timezone and opening it in another may change the displayed time for date-time values.
+- Reading correctly detects and honors the legacy **1904 date system** (used by older Excel for Mac files). Writing always uses the standard 1900 system, regardless of which system the original file used.
 
 ---
 
