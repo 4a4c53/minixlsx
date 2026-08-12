@@ -1,0 +1,51 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
+	"vcs": { "clientKind": "git", "enabled": true, "useIgnoreFile": true },
+	"formatter": { "indentStyle": "tab", "lineWidth": 120 },
+	"javascript": {
+		"formatter": { "quoteStyle": "single", "semicolons": "asNeeded" }
+	},
+	"linter": {
+		"rules": {
+			"preset": "recommended",
+			"correctness": {
+				"noUnusedVariables": "error"
+			},
+			"style": {
+				"useNumberNamespace": "error",
+				"useNumericSeparators": {
+					"level": "error",
+					"options": {
+						"hexadecimal": { "minimumDigits": 255 }
+					}
+				},
+				"useImportType": {
+					"level": "on",
+					"options": { "style": "separatedType" }
+				}
+			}
+		}
+	},
+	"assist": {
+		"actions": {
+			"source": {
+				"organizeImports": {
+					"level": "on",
+					"options": {
+						"sortBareImports": true,
+						"groups": [
+							{ "source": [":NODE:", ":BUN:"], "type": false },
+							":BLANK_LINE:",
+							{ "source": "#minixlsx/**", "type": false },
+							":BLANK_LINE:",
+							{ "source": "#minixlsx/**", "type": true },
+							":BLANK_LINE:",
+							{ "source": [":NODE:", ":BUN:"], "type": true }
+						]
+					}
+				},
+				"useSortedPackageJson": "on"
+			}
+		}
+	}
+}

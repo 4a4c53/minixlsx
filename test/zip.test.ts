@@ -1,34 +1,77 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
-import { zipSync, unzipSync, crc32 } from '#minixlsx/zip'
+import { describe, test } from 'node:test'
 
-test('crc32 de valores conocidos', () => {
-	assert.equal(crc32(Buffer.from('')), 0)
-	assert.equal(crc32(Buffer.from('123456789')), 0xcbf43926)
+import { crc32, unzipSync, zipSync } from '#minixlsx/zip'
+
+describe('CRC32', () => {
+	test('crc32 de valores conocidos', () => {
+		assert.equal(crc32(Buffer.from('')), 0)
+		assert.equal(crc32(Buffer.from('123456789')), 0xcbf43926)
+	})
 })
 
-test('zip: ida y vuelta con varios archivos', () => {
-	const entries = [
-		{ name: 'hola.txt', data: Buffer.from('hola mundo') },
-		{ name: 'dir/anidado.xml', data: Buffer.from('<a>áéíóú 漢字</a>') },
-		{ name: 'vacio.bin', data: Buffer.alloc(0) },
-		{ name: 'grande.txt', data: Buffer.from('x'.repeat(100000)) },
-	]
-	const zipped = zipSync(entries)
-	const files = unzipSync(zipped)
-	assert.equal(files.size, entries.length)
-	for (const { name, data } of entries) {
-		assert.ok(files.has(name), `falta ${name}`)
-		assert.deepEqual(files.get(name), data)
-	}
+describe('zipSync', () => {
+	test('zip: ida y vuelta con varios archivos', () => {
+		const entries = [
+			{ data: Buffer.from('hola mundo'), name: 'hola.txt' },
+			{ data: Buffer.from('<a>áéíóú 漢字</a>'), name: 'dir/anidado.xml' },
+			{ data: Buffer.alloc(0), name: 'vacio.bin' },
+			{ data: Buffer.from('x'.repeat(100_000)), name: 'grande.txt' },
+		]
+		const zipped = zipSync(entries)
+		const files = unzipSync(zipped)
+		assert.equal(files.size, entries.length)
+		for (const { name, data } of entries) {
+			assert.ok(files.has(name), `falta ${name}`)
+			assert.deepEqual(files.get(name), data)
+		}
+	})
+
+	test('zip: datos incompresibles se almacenan sin inflar el tamaño', () => {
+		const random = Buffer.from(Array.from({ length: 5000 }, (_, i) => (i * 2_654_435_761) & 0xff))
+		const files = unzipSync(zipSync([{ data: random, name: 'r.bin' }]))
+		assert.deepEqual(files.get('r.bin'), random)
+	})
+
+	test('zip: no admite más de 65535 entradas', () => {
+		const many = Array.from({ length: 65_536 }, (_, i) => ({ data: Buffer.alloc(0), name: `f${i}` }))
+		assert.throws(() => zipSync(many), RangeError)
+	})
 })
 
-test('zip: datos incompresibles se almacenan sin inflar el tamaño', () => {
-	const random = Buffer.from(Array.from({ length: 5000 }, (_, i) => (i * 2654435761) & 0xff))
-	const files = unzipSync(zipSync([{ name: 'r.bin', data: random }]))
-	assert.deepEqual(files.get('r.bin'), random)
-})
+describe('unzipSync', () => {
+	test('unzip: rechaza datos que no son ZIP', () => {
+		assert.throws(() => unzipSync(Buffer.from('esto no es un zip, obviamente')), /ZIP/)
+	})
 
-test('unzip: rechaza datos que no son ZIP', () => {
-	assert.throws(() => unzipSync(Buffer.from('esto no es un zip, obviamente')), /ZIP/)
+	const CENTRAL_SIG = Buffer.from([0x50, 0x4b, 0x01, 0x02])
+
+	test('unzip: rechaza contenido con CRC32 corrupto', () => {
+		const zipped = Buffer.from(zipSync([{ data: Buffer.from('hola mundo'), name: 'a.txt' }]))
+		const dataStart = zipped.indexOf(Buffer.from('hola mundo'))
+		zipped[dataStart] ^= 0xff // corrompe un byte de los datos comprimidos/almacenados
+		assert.throws(() => unzipSync(zipped), /CRC inválido/)
+	})
+
+	test('unzip: rechaza marcadores ZIP64 (>4 GB) con error explícito', () => {
+		const zipped = Buffer.from(zipSync([{ data: Buffer.from('hola'), name: 'a.txt' }]))
+		const p = zipped.indexOf(CENTRAL_SIG)
+		zipped.writeUInt32LE(0xffffffff, p + 20) // csize a la firma reservada de ZIP64
+		assert.throws(() => unzipSync(zipped), /ZIP64/)
+	})
+
+	test('unzip: rechaza un tamaño comprimido que excede los datos disponibles', () => {
+		const zipped = Buffer.from(zipSync([{ data: Buffer.from('hola mundo'), name: 'a.txt' }]))
+		const p = zipped.indexOf(CENTRAL_SIG)
+		zipped.writeUInt32LE(50_000_000, p + 20) // csize mucho mayor que el archivo real
+		assert.throws(() => unzipSync(zipped), /truncados/)
+	})
+
+	test('unzip: rechaza entradas duplicadas', () => {
+		const zipped = zipSync([
+			{ data: Buffer.from('uno'), name: 'a.txt' },
+			{ data: Buffer.from('dos'), name: 'a.txt' },
+		])
+		assert.throws(() => unzipSync(zipped), /duplicada/)
+	})
 })

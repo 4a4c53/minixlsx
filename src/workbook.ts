@@ -1,15 +1,17 @@
 import { writeFileSync } from 'node:fs'
-import { zipSync, type ZipEntry } from '#minixlsx/zip'
-import { esc, encodeText } from '#minixlsx/xml'
+
 import { Sheet } from '#minixlsx/sheet'
+import { validateSheetName } from '#minixlsx/sheet-name'
 import { colToName, dateToSerial } from '#minixlsx/utils'
+import { encodeText, esc } from '#minixlsx/xml'
+import { zipSync } from '#minixlsx/zip'
+
+import type { ZipEntry } from '#minixlsx/zip'
 
 const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
 const NS_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 const NS_REL_DOC = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 const NS_REL_PKG = 'http://schemas.openxmlformats.org/package/2006/relationships'
-
-const INVALID_SHEET_CHARS = /[\\/?*[\]:]/
 
 /** Un libro de Excel: colección de hojas que se serializa a .xlsx. */
 export class Workbook {
@@ -17,14 +19,10 @@ export class Workbook {
 
 	/** Crea una hoja y la devuelve. */
 	addSheet(name: string = `Hoja${this.sheets.length + 1}`): Sheet {
-		if (typeof name !== 'string' || !name.length)
-			throw new TypeError('El nombre de la hoja debe ser una cadena no vacía')
-		if (name.length > 31) throw new RangeError('Excel limita los nombres de hoja a 31 caracteres')
-		if (INVALID_SHEET_CHARS.test(name))
-			throw new RangeError(`Nombre de hoja inválido "${name}": no puede contener \\ / ? * [ ] :`)
-		if (this.sheets.some((s) => s.name.toLowerCase() === name.toLowerCase())) {
-			throw new RangeError(`Ya existe una hoja llamada "${name}"`)
-		}
+		validateSheetName(
+			name,
+			this.sheets.map((s) => s.name),
+		)
 		const sheet = new Sheet(name)
 		this.sheets.push(sheet)
 		return sheet
@@ -57,55 +55,84 @@ export const STYLE_DATE = 1
 export const STYLE_DATETIME = 2
 
 function sheetToXml(sheet: Sheet, sharedIdx: (s: string) => number): string {
-	const rows: string[] = []
-	for (let r = 1; r <= sheet._maxRow; r++) {
-		const cells: string[] = []
-		for (let c = 1; c <= sheet._maxCol; c++) {
-			const cell = sheet._cells.get(`${r},${c}`)
-			if (!cell) continue
-			const ref = colToName(c) + r
-			const { value: v, formula } = cell
-			let attrs = ''
-			let inner = ''
+	// Recorre solo las celdas realmente pobladas (no el rectángulo maxRow×maxCol),
+	// para que hojas dispersas con una celda en una esquina lejana no exploten en coste.
+	const coords = [...sheet._cells.entries()]
+		.map(([key, cell]) => {
+			const [r, c] = key.split(',').map(Number)
+			return { cell, r, c }
+		})
+		.sort((a, b) => a.r - b.r || a.c - b.c)
 
-			if (formula) {
-				inner = `<f>${esc(formula)}</f>`
-				if (typeof v === 'number') inner += `<v>${v}</v>`
-				else if (typeof v === 'string') {
-					attrs = ' t="str"'
-					inner += `<v>${encodeText(v)}</v>`
-				} else if (typeof v === 'boolean') {
-					attrs = ' t="b"'
-					inner += `<v>${v ? 1 : 0}</v>`
-				}
-			} else if (typeof v === 'number') {
-				inner = `<v>${v}</v>`
+	const rows: string[] = []
+	let currentRow = -1
+	let cells: string[] = []
+	const flushRow = (): void => {
+		if (currentRow >= 0 && cells.length) rows.push(`<row r="${currentRow}">${cells.join('')}</row>`)
+	}
+
+	for (const { cell, r, c } of coords) {
+		if (r !== currentRow) {
+			flushRow()
+			currentRow = r
+			cells = []
+		}
+		const ref = colToName(c) + r
+		const { value: v, formula } = cell
+		let attrs = ''
+		let inner = ''
+
+		if (formula) {
+			inner = `<f>${esc(formula)}</f>`
+			if (typeof v === 'number') inner += `<v>${v}</v>`
+			else if (typeof v === 'string') {
+				attrs = ' t="str"'
+				inner += `<v>${encodeText(v)}</v>`
 			} else if (typeof v === 'boolean') {
 				attrs = ' t="b"'
-				inner = `<v>${v ? 1 : 0}</v>`
-			} else if (v instanceof Date) {
-				const hasTime = v.getHours() || v.getMinutes() || v.getSeconds() || v.getMilliseconds()
-				attrs = ` s="${hasTime ? STYLE_DATETIME : STYLE_DATE}"`
-				inner = `<v>${dateToSerial(v)}</v>`
-			} else {
-				attrs = ' t="s"'
-				inner = `<v>${sharedIdx(String(v))}</v>`
+				inner += `<v>${v ? 1 : 0}</v>`
 			}
-			cells.push(`<c r="${ref}"${attrs}>${inner}</c>`)
+		} else if (typeof v === 'number') {
+			inner = `<v>${v}</v>`
+		} else if (typeof v === 'boolean') {
+			attrs = ' t="b"'
+			inner = `<v>${v ? 1 : 0}</v>`
+		} else if (v instanceof Date) {
+			const hasTime = v.getHours() || v.getMinutes() || v.getSeconds() || v.getMilliseconds()
+			attrs = ` s="${hasTime ? STYLE_DATETIME : STYLE_DATE}"`
+			inner = `<v>${dateToSerial(v)}</v>`
+		} else {
+			attrs = ' t="s"'
+			inner = `<v>${sharedIdx(String(v))}</v>`
 		}
-		if (cells.length) rows.push(`<row r="${r}">${cells.join('')}</row>`)
+		cells.push(`<c r="${ref}"${attrs}>${inner}</c>`)
 	}
-	const dim = sheet._maxRow ? `A1:${colToName(Math.max(sheet._maxCol, 1))}${sheet._maxRow}` : 'A1'
+	flushRow()
+
+	let dim = 'A1'
+	if (coords.length) {
+		let minR = coords[0].r
+		let minC = coords[0].c
+		let maxR = minR
+		let maxC = minC
+		for (const { r, c } of coords) {
+			if (r < minR) minR = r
+			if (r > maxR) maxR = r
+			if (c < minC) minC = c
+			if (c > maxC) maxC = c
+		}
+		dim = `${colToName(minC)}${minR}:${colToName(maxC)}${maxR}`
+	}
 	return `${XML_DECL}<worksheet xmlns="${NS_MAIN}"><dimension ref="${dim}"/><sheetData>${rows.join('')}</sheetData></worksheet>`
 }
 
-function sharedStringsXml(shared: Map<string, number>): string {
+function sharedStringsXml(shared: Map<string, number>, totalRefs: number): string {
 	const items: string[] = []
 	for (const s of shared.keys()) {
 		const preserve = /^\s|\s$/.test(s) ? ' xml:space="preserve"' : ''
 		items.push(`<si><t${preserve}>${encodeText(s)}</t></si>`)
 	}
-	return `${XML_DECL}<sst xmlns="${NS_MAIN}" count="${shared.size}" uniqueCount="${shared.size}">${items.join('')}</sst>`
+	return `${XML_DECL}<sst xmlns="${NS_MAIN}" count="${totalRefs}" uniqueCount="${shared.size}">${items.join('')}</sst>`
 }
 
 function stylesXml(): string {
@@ -128,8 +155,19 @@ function stylesXml(): string {
 function buildXlsx(wb: Workbook): Buffer {
 	if (!wb.sheets.length) throw new Error('El libro necesita al menos una hoja')
 
+	// Defensa en profundidad: addSheet() ya valida, pero wb.sheets es mutable desde fuera
+	// (p. ej. wb.sheets.push(...)), así que la escritura vuelve a comprobar las mismas reglas.
+	wb.sheets.forEach((s, i) => {
+		validateSheetName(
+			s.name,
+			wb.sheets.slice(0, i).map((other) => other.name),
+		)
+	})
+
 	const shared = new Map<string, number>()
+	let sharedRefs = 0
 	const sharedIdx = (s: string): number => {
+		sharedRefs++
 		let i = shared.get(s)
 		if (i === undefined) {
 			i = shared.size
@@ -179,19 +217,19 @@ function buildXlsx(wb: Workbook): Buffer {
 		'</Relationships>'
 
 	const entries: ZipEntry[] = [
-		{ name: '[Content_Types].xml', data: Buffer.from(contentTypes) },
-		{ name: '_rels/.rels', data: Buffer.from(rootRels) },
-		{ name: 'xl/workbook.xml', data: Buffer.from(workbookXml) },
-		{ name: 'xl/_rels/workbook.xml.rels', data: Buffer.from(workbookRels) },
+		{ data: Buffer.from(contentTypes), name: '[Content_Types].xml' },
+		{ data: Buffer.from(rootRels), name: '_rels/.rels' },
+		{ data: Buffer.from(workbookXml), name: 'xl/workbook.xml' },
+		{ data: Buffer.from(workbookRels), name: 'xl/_rels/workbook.xml.rels' },
 		...sheetXmls.map((xml, i) => ({
-			name: `xl/worksheets/sheet${i + 1}.xml`,
 			data: Buffer.from(xml),
+			name: `xl/worksheets/sheet${i + 1}.xml`,
 		})),
 		{
+			data: Buffer.from(sharedStringsXml(shared, sharedRefs)),
 			name: 'xl/sharedStrings.xml',
-			data: Buffer.from(sharedStringsXml(shared)),
 		},
-		{ name: 'xl/styles.xml', data: Buffer.from(stylesXml()) },
+		{ data: Buffer.from(stylesXml()), name: 'xl/styles.xml' },
 	]
 
 	return zipSync(entries)

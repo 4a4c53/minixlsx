@@ -1,292 +1,187 @@
 ---
 name: semantic-commits
-description: Analyze the working tree and create clean, atomic, reviewable commits using Conventional Commits.
-argument-hint: Optional context to help infer commit intent.
-user-invocable: true
+description: Inspect a Git worktree, group changes by intent, and create clean, atomic Conventional Commits with safe staging and explicit validation. Use when the user asks to review pending changes, suggest commit messages, organize changes into commits, or create commits from the current worktree.
+metadata:
+  author: José Luis Silva
+  version: '1.0.0'
 ---
 
-## Rules
+# Semantic Commits
 
-- One commit = one intent.
-- Never mix unrelated changes.
-- Prefer multiple small commits.
-- Never guess ambiguous intent.
-- Never stage everything blindly.
-- Use Conventional Commits (RFC 3.0).
-- Agent commits must use `--no-gpg-sign`.
-- Human signs commits afterward.
-- Never add `Co-authored-by` trailers or any co-author metadata.
-- Never use `--author` or otherwise attribute commits to anyone other than the current Git author.
-- Never create empty commits.
-- Check for whitespace errors and line ending issues before each commit.
-- Only run tests when repository has a minimal test suite (≤10s on standard hardware).
+Turn a dirty worktree into atomic, reviewable commits while preserving user changes, repository conventions, and Git history.
 
-## Workflow
+## 1. Determine mode
 
-### 1. Inspect
+- **Review**: inspect and propose commit groups/messages only. Never modify the index or history.
+- **Commit**: only when explicitly asked to commit/create/organize commits.
+- **Ambiguous**: inspect read-only, propose grouping, then request authorization.
 
-Run:
+Never amend, rebase, push, rewrite history, or sign commits unless explicitly requested.
+
+## 2. Load repository rules
+
+Before staging or validation, read applicable `AGENTS.md`, `CONTRIBUTING*`, commit templates, hooks, and package-manager instructions. Repository rules override this skill.
+
+Use the configured package manager and never introduce another lockfile.
+
+## 3. Inspect state
+
+Inspect:
 
 ```bash
 git status --short
+git diff --cached --stat
 git diff --cached
+git diff --stat
 git diff
 git ls-files --others --exclude-standard
-```
-
-If:
-
-- clean tree → report and stop
-- merge conflict → stop
-- intent is unclear → leave changes unstaged
-
-### 2. Issue Key
-
-Check:
-
-```bash
+git ls-files -u
 git branch --show-current
+git log -20 --pretty=format:%s
 ```
 
-If branch contains:
+Also inspect relevant untracked files; they are absent from `git diff`. Use targeted inspection for large/binary files.
 
-- `ABC-123`
-- `#123`
+Record pre-existing staged changes.
 
-prepend it to commit messages.
+Stop when:
 
-Otherwise omit it.
+- `git ls-files -u` reports conflicts.
+- Both index and worktree are clean.
 
-### 3. Group Changes
+Never reset, checkout, clean, delete, or otherwise discard user changes. Ignore ignored files unless explicitly requested.
 
-Group by intent:
+## 4. Build atomic commit groups
 
-- feat — new feature
-- fix — bug fix
-- revert — revert previous commit
-- refactor — code refactor (no behavior change)
-- docs — documentation
-- test — tests or test fixes
-- style — formatting (no code change)
-- chore — tooling, deps (no user-facing change)
-- build — build system or compiler changes
-- ci — CI/CD pipeline changes
-- perf — performance improvement
+Infer conventions from recent history: types, scopes, casing, emoji, and issue-key style.
 
-Use:
+Group by **behavioral intent**, not directory or extension:
 
-```bash
-git add -p
-```
+- Keep related implementation, tests, migrations, and docs together.
+- Separate independent features, fixes, refactors, formatting, generated output, etc.
+- Do not split a coherent change merely to reduce size.
+- Inspect staged and unstaged content independently; use hunk-level separation when needed.
 
-or explicit `git add <file>`.
+Prefer types:
 
-Avoid:
+`feat`, `fix`, `revert`, `refactor`, `docs`, `test`, `style`, `chore`, `build`, `ci`, `perf`.
 
-```bash
-git add .
-git add -A
-```
+Use other types only when established by repository history.
 
-unless everything belongs together.
+Extract an issue key such as `ABC-123` or `#123` from the branch only when exactly one candidate is unambiguous. Otherwise omit it and report ambiguity.
 
-## Commit Format
+Before proposing or staging anything, inspect candidate staged, unstaged, and untracked changes for accidental or sensitive content, including credentials, tokens, private keys, real `.env` files, debug/temp files, and unintended generated assets. Stop and report suspicious material.
+
+## 5. Compose messages
+
+Format:
 
 ```text
-<type>[(<scope>)][!]: [emoji] <subject>
+[ISSUE-123] type(scope)!: subject
+type(scope)!: subject
 ```
 
-Examples (emojis optional, based on repo convention):
-
-```text
-feat(auth): add email verification
-feat(auth)!: ✨ remove password auth
-fix(api): 🐛 prevent duplicate requests
-docs: update setup guide
-revert: revert commit abc1234
-```
+Omit issue, scope, or `!` when unnecessary.
 
 Rules:
 
-- type: required (feat, fix, revert, docs, test, etc.)
-- scope: use ONLY if changes affect 1–2 clear modules;
-  omit for repo-wide changes (docs, chores, etc.)
-- `!` before `:` signals BREAKING CHANGE (impacts Semantic Versioning)
-- emoji: optional; use only if repo already uses them
-- imperative mood ("add", not "adds" or "added")
-- present tense
-- ≤72 chars first line
-- subject ≤50 chars after emoji (if used)
-- describe intent, not file operations
+- Match repository casing/style.
+- Imperative, present-tense subject describing intent rather than file operations.
+- Header ≤72 chars; subject preferably ≤50.
+- Scope only for one or two clear modules.
+- `!` only for breaking changes.
+- Emoji only when consistently established.
+- Add a body/footer only when motivation, behavior, migration, trade-offs, or breaking details need explanation.
+- Never add `Co-authored-by` or use `--author`.
 
-## Body
+## 6. Stage safely
 
-Include only when needed:
+**Commit mode only.**
 
-- algorithm changes
-- behavioral changes
-- non-obvious fixes
-- large features
+Pre-existing staged changes are user-owned.
 
-Explain **why**, not **what**.
+- Never silently mix or unstage them.
+- When explicitly asked to organize **all** pending changes, selectively unstage unrelated files/hunks if necessary and report it.
+- Otherwise leave unrelated staged content untouched.
+- If existing staged content prevents an atomic commit, stop and report it.
 
-## BREAKING CHANGE
-
-For breaking changes, use one of these formats:
-
-**Method 1:** Append `!` before colon (recommended, most visible):
-
-```text
-feat(api)!: redesign authentication flow
-```
-
-**Method 2:** Add footer (for detailed explanation):
-
-```text
-feat(api): redesign authentication flow
-
-BREAKING CHANGE: old token format no longer accepted
-```
-
-You can combine both:
-
-```text
-feat(api)!: redesign authentication flow
-
-BREAKING CHANGE: old token format no longer accepted
-Migration: see docs/MIGRATION.md
-```
-
-**Important:** Commits with BREAKING CHANGE trigger major version bumps in Semantic Versioning.
-
-## Footer
-
-Use for:
-
-- issue references (Closes #123, Refs #456)
-- BREAKING CHANGE: (if not using `!`)
-- migration notes
-- co-reviewers (not co-authors)
-
-## Splitting
-
-Split commits whenever intent differs.
-
-Keep together only when changes directly support the same feature/fix (including tests/docs).
-
-## Commit
-
-### Pre-commit Checks
-
-Before each commit, always run:
+Stage only explicit paths/hunks:
 
 ```bash
-# Check for whitespace errors, line ending issues
-git diff --check --cached
-
-# Verify staged changes are intentional
-git diff --cached
-
-# Prevent empty commits
-if git diff-index --cached --quiet HEAD; then
-  echo "error: nothing staged"
-  exit 1
-fi
-```
-
-### Testing
-
-If the repo has a fast test suite (< 10s):
-
-```bash
-# Run minimal test suite (e.g., lint, format check, critical tests)
-pnpm test:quick  # or npm test, make test, etc.
-```
-
-If tests fail, fix the staged changes before proceeding.
-
-### Create Commit
-
-```bash
-git commit --no-gpg-sign -m "<message>"
+git add <path>
+git add -p
 ```
 
 Never use:
 
 ```bash
-git commit -S              # GPG signing in sandbox
-git commit --author="..." # Attribute commits elsewhere
+git add .
+git add -A
+git commit -a
 ```
 
-Do not add `Co-authored-by:` trailers to the commit message under any circumstances.
-
-## Safety
-
-Never commit:
-
-- secrets
-- real `.env`
-- credentials
-- tokens
-- temporary/debug files
-- unintended generated assets
-
-If unrelated files are staged:
+Before every commit:
 
 ```bash
-git restore --staged <file>
+git diff --check --cached
+git diff --cached
+git diff --cached --quiet && exit 1
 ```
 
-## Integration with Semantic Versioning
+Commit only when the index contains exactly one reviewed intent. If mixed changes cannot be separated safely, stop.
 
-Each commit type maps to version bumps:
+## 7. Validate and commit
 
-| Commit Type                   | Version Impact | Example                                |
-| ----------------------------- | -------------- | -------------------------------------- |
-| `feat`                        | Minor (Y.X.0)  | `feat(auth): add email verification`   |
-| `feat!` or `BREAKING CHANGE`  | Major (X.0.0)  | `feat(api)!: redesign token format`    |
-| `fix`                         | Patch (Y.X.Z)  | `fix(api): prevent duplicate requests` |
-| `revert`                      | Patch          | `revert: revert commit abc1234`        |
-| `refactor`, `perf`, `style`   | No bump        | Included in patch                      |
-| `docs`, `test`, `chore`, `ci` | No bump        | Not included in version                |
+Run repository-required checks before each commit, using the smallest relevant documented command without skipping mandatory checks.
 
-The commit log is the source of truth for version calculation. Refer to the `semantic-versioning` skill for detailed rules.
+Do not:
 
-## Finish
+- hide or broadly fix unrelated/pre-existing failures;
+- stage unrelated fixes merely to pass validation;
+- use `--no-verify`;
+- commit after failed validation unless the user explicitly accepts the failure.
 
-After each commit:
+Commit with the exact proposed message and current Git author:
+
+```bash
+git commit --no-gpg-sign -m "<message>"
+```
+
+unless repository signing rules override it.
+
+If hooks fail or modify files, stop and inspect/report the resulting state; never retry blindly.
+
+After success:
 
 ```bash
 git status --short
+git log -1 --format='%h %s'
 ```
 
-Continue until:
+Verify the commit hash before claiming success.
 
-- all intentional changes are committed
-- ambiguous changes remain unstaged
-- unsafe files are excluded
+Repeat only when the user requested all eligible changes. Leave unsafe, ambiguous, or unrelated changes pending.
+
+## 8. Report
+
+Reply in the user's language and lead with the outcome.
 
 Report:
 
-- commits created
-- skipped files
-- ambiguous changes
-- safety exclusions
+1. **Result** — review completed, commits created, or why none were created.
+2. **Commits** — verified short hash, exact subject, and one-line intent.
+3. **Validation** — commands and pass/fail/skipped status with reason.
+4. **Remaining** — uncommitted, ambiguous, unsafe, ignored, or pre-existing staged changes.
+5. **Index changes** — any unrelated files/hunks selectively unstaged while reorganizing all changes.
 
-For human signing afterward:
+Never claim a commit exists without successful `git commit` plus verified hash. Never claim a clean worktree without confirming `git status --short`.
+
+## Human signing
+
+If requested, provide commands for the user to sign afterward; never sign on their behalf:
 
 ```bash
 git commit --amend --no-edit -S
-```
-
-or for multiple commits:
-
-```bash
 git rebase --exec 'git commit --amend --no-edit -S' HEAD~N
-```
-
-Verify commits:
-
-```bash
 git log --pretty=format:"%h %G? %s" -5
 ```

@@ -3,9 +3,17 @@
 import { deflateRawSync, inflateRawSync } from 'node:zlib'
 
 export interface ZipEntry {
-	name: string
 	data: Buffer
+	name: string
 }
+
+// Firma reservada de ZIP64 en campos de 32 bits; su presencia indica un archivo
+// que esta implementación (sin soporte ZIP64) no puede leer de forma fiable.
+const ZIP64_MAGIC = 0xffffffff
+
+// Límite defensivo por entrada al descomprimir: evita que una "bomba" (pocos KB
+// comprimidos que se expanden a GB) agote la memoria del proceso.
+const MAX_ENTRY_SIZE = 1024 * 1024 * 1024 // 1 GiB
 
 const CRC_TABLE = new Uint32Array(256)
 for (let n = 0; n < 256; n++) {
@@ -28,6 +36,10 @@ function dosDateTime(d: Date = new Date()): { time: number; date: number } {
 
 /** Empaqueta entradas en un ZIP. */
 export function zipSync(files: ZipEntry[]): Buffer {
+	if (files.length > 0xffff) {
+		throw new RangeError('No se pueden empaquetar más de 65535 entradas en un ZIP (requeriría ZIP64)')
+	}
+
 	const { time, date } = dosDateTime()
 	const localParts: Buffer[] = []
 	const centralParts: Buffer[] = []
@@ -35,6 +47,10 @@ export function zipSync(files: ZipEntry[]): Buffer {
 
 	for (const { name, data } of files) {
 		const nameBuf = Buffer.from(name, 'utf8')
+		if (nameBuf.length > 0xffff) throw new RangeError(`Nombre de entrada ZIP demasiado largo: "${name}"`)
+		if (data.length > ZIP64_MAGIC) {
+			throw new RangeError(`La entrada "${name}" supera el límite de 4 GB de ZIP (requeriría ZIP64)`)
+		}
 		const crc = crc32(data)
 		const deflated = deflateRawSync(data, { level: 6 })
 		const method = deflated.length < data.length ? 8 : 0
@@ -88,7 +104,7 @@ export function zipSync(files: ZipEntry[]): Buffer {
 /** Extrae un ZIP en memoria como Map de nombre → contenido. */
 export function unzipSync(buf: Buffer): Map<string, Buffer> {
 	let eocd = -1
-	const stop = Math.max(0, buf.length - 22 - 65535)
+	const stop = Math.max(0, buf.length - 22 - 65_535)
 	for (let i = buf.length - 22; i >= stop; i--) {
 		if (buf.readUInt32LE(i) === 0x06054b50) {
 			eocd = i
@@ -98,29 +114,58 @@ export function unzipSync(buf: Buffer): Map<string, Buffer> {
 	if (eocd < 0) throw new Error('No es un ZIP válido: falta el registro EOCD')
 
 	const count = buf.readUInt16LE(eocd + 10)
+	if (count === 0xffff) throw new Error('Archivos ZIP64 no soportados')
 	let ptr = buf.readUInt32LE(eocd + 16)
+	if (ptr === ZIP64_MAGIC) throw new Error('Archivos ZIP64 no soportados')
 	const files = new Map<string, Buffer>()
 
 	for (let i = 0; i < count; i++) {
+		if (ptr + 46 > buf.length) throw new Error('Directorio central corrupto: registro fuera de rango')
 		if (buf.readUInt32LE(ptr) !== 0x02014b50) throw new Error('Directorio central corrupto')
+
 		const method = buf.readUInt16LE(ptr + 10)
+		const crc = buf.readUInt32LE(ptr + 16)
 		const csize = buf.readUInt32LE(ptr + 20)
+		const usize = buf.readUInt32LE(ptr + 24)
 		const nameLen = buf.readUInt16LE(ptr + 28)
 		const extraLen = buf.readUInt16LE(ptr + 30)
 		const commentLen = buf.readUInt16LE(ptr + 32)
 		const localOff = buf.readUInt32LE(ptr + 42)
-		const name = buf.toString('utf8', ptr + 46, ptr + 46 + nameLen)
 
+		if (csize === ZIP64_MAGIC || usize === ZIP64_MAGIC || localOff === ZIP64_MAGIC) {
+			throw new Error('Archivos ZIP64 no soportados (entradas > 4 GB)')
+		}
+		if (usize > MAX_ENTRY_SIZE) {
+			throw new Error('Entrada ZIP demasiado grande: posible bomba de descompresión')
+		}
+		if (ptr + 46 + nameLen > buf.length) throw new Error('Directorio central corrupto: nombre fuera de rango')
+		const name = buf.toString('utf8', ptr + 46, ptr + 46 + nameLen)
+		if (files.has(name)) throw new Error(`Entrada ZIP duplicada: "${name}"`)
+
+		if (localOff + 30 > buf.length || buf.readUInt32LE(localOff) !== 0x04034b50) {
+			throw new Error(`Encabezado local corrupto para "${name}"`)
+		}
 		// Los tamaños de nombre/extra del encabezado local pueden diferir de los del directorio central.
 		const lNameLen = buf.readUInt16LE(localOff + 26)
 		const lExtraLen = buf.readUInt16LE(localOff + 28)
 		const start = localOff + 30 + lNameLen + lExtraLen
+		if (start < 0 || start + csize > buf.length) throw new Error(`Datos truncados para "${name}"`)
 		const raw = buf.subarray(start, start + csize)
 
 		let data: Buffer
-		if (method === 8) data = inflateRawSync(raw)
-		else if (method === 0) data = Buffer.from(raw)
-		else throw new Error(`Método de compresión no soportado: ${method}`)
+		if (method === 8) {
+			try {
+				data = inflateRawSync(raw, { maxOutputLength: MAX_ENTRY_SIZE })
+			} catch (err) {
+				throw new Error(`No se pudo descomprimir "${name}": ${err instanceof Error ? err.message : String(err)}`)
+			}
+		} else if (method === 0) {
+			data = Buffer.from(raw)
+		} else {
+			throw new Error(`Método de compresión no soportado: ${method}`)
+		}
+
+		if (crc32(data) !== crc) throw new Error(`CRC inválido para "${name}": el archivo está corrupto`)
 
 		files.set(name, data)
 		ptr += 46 + nameLen + extraLen + commentLen

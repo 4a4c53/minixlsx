@@ -1,6 +1,6 @@
 // Demo: crear un .xlsx, volver a leerlo y extraer los datos.
 // Ejecutar con: node examples/demo.ts
-import { Workbook, readFile } from '../index.ts'
+import { readFile, Workbook } from '#minixlsx/index'
 
 const wb = new Workbook()
 
