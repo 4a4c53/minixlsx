@@ -1,6 +1,6 @@
 {
 	"name": "minixlsx",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "A tiny, zero-dependency library for reading and writing Excel (.xlsx) files in Node.js.",
 	"keywords": [
 		"excel",
