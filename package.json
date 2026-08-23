@@ -43,7 +43,7 @@
 		"lint": "biome check",
 		"lint:fix": "biome check --write",
 		"prepack": "pnpm build",
-		"test": "node --conditions=minixlsx-dev --test",
+		"test": "node --conditions=minixlsx-dev --test 'test/**/*.test.ts'",
 		"typecheck": "tsc"
 	},
 	"devDependencies": {
