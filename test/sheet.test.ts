@@ -207,13 +207,14 @@ describe('toObjects', () => {
 
 	// Los dos casos siguientes fijan limitaciones conocidas de 0.2.x: documentan lo que
 	// hoy ocurre para que un cambio de política sea visible en el diff, no un descuido.
-	test('LIMITACIÓN: con cabeceras duplicadas gana la última columna', () => {
+	test('las cabeceras duplicadas reciben sufijo en vez de pisarse', () => {
 		const s = newSheet()
 		s.addRows([
-			['a', 'a'],
-			[1, 2],
+			['a', 'a', 'a', 'a_2'],
+			[1, 2, 3, 4],
 		])
-		assert.deepEqual(s.toObjects(), [{ a: 2 }])
+		// La cuarta cabecera ya se llama "a_2", así que el sufijo salta hasta el primer nombre libre.
+		assert.deepEqual(s.toObjects(), [{ a: 1, a_2: 2, a_3: 3, a_2_2: 4 }])
 	})
 
 	test('una cabecera __proto__ se conserva como clave propia sin alterar el prototipo', () => {

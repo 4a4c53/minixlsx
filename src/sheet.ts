@@ -160,6 +160,8 @@ export class Sheet {
 	/**
 	 * Datos como array de objetos usando una fila como cabecera.
 	 * Cabeceras vacías usan la letra de columna. Filas totalmente vacías se omiten.
+	 * Una cabecera repetida recibe el sufijo `_2`, `_3`… hasta ser única, para que
+	 * ninguna columna se pierda al pisar a otra con el mismo nombre.
 	 */
 	toObjects({
 		headerRow = 1,
@@ -167,9 +169,14 @@ export class Sheet {
 	}: { headerRow?: number } & DenseOptions = {}): Record<string, CellValue>[] {
 		this._checkDense(maxCells)
 		const headers: string[] = []
+		const used = new Set<string>()
 		for (let c = 1; c <= this._maxCol; c++) {
 			const v = this.cellAt(headerRow, c)
-			headers.push(v == null ? colToName(c) : String(v))
+			const base = v == null ? colToName(c) : String(v)
+			let header = base
+			for (let n = 2; used.has(header); n++) header = `${base}_${n}`
+			used.add(header)
+			headers.push(header)
 		}
 		const out: Record<string, CellValue>[] = []
 		for (let r = headerRow + 1; r <= this._maxRow; r++) {
