@@ -153,7 +153,9 @@ function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set
 
 			const type = attr(attrs, 't') ?? 'n'
 			const style = +(attr(attrs, 's') ?? -1)
-			const vText = firstElement(inner, 'v')?.inner ?? null
+			// Un `<v/>` o `<v></v>` vacío (openpyxl lo escribe en fórmulas sin valor cacheado)
+			// equivale a no tener valor: no debe convertirse en 0 ni en el shared string 0.
+			const vText = firstElement(inner, 'v')?.inner || null
 			const fText = firstElement(inner, 'f')?.inner ?? null
 
 			let value: CellValue = null

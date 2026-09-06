@@ -5,11 +5,10 @@ experiencia de desarrollo o la calidad del paquete publicado.
 
 ## Integración continua y calidad
 
-- [ ] **Añadir CI.** No existe `.github/`. Un workflow que ejecute `pnpm install --frozen-lockfile`,
+- [x] **Añadir CI.** Resuelto en PR #2 (`.github/workflows/ci.yml`: lint, typecheck, cobertura con umbrales y tests en Node 22/24 con dos husos horarios). Nota original: no existía `.github/`. Un workflow que ejecute `pnpm install --frozen-lockfile`,
   `pnpm lint`, `pnpm typecheck`, `pnpm test` y `pnpm build` en Node 22 y 24 evitaría
   regresiones y validaría el `prepack` antes de publicar.
-- [ ] **Cobertura de tests.** `node --test --experimental-test-coverage` ya está disponible;
-  publicar el resumen en CI y fijar un umbral.
+- [x] **Cobertura de tests.** Resuelto en PR #2 con `pnpm test:coverage` y umbrales fijados a la cobertura alcanzada.
 - [ ] **`CHANGELOG.md`** siguiendo Keep a Changelog, alimentado por los commits
   convencionales que ya exige `.agents/skills/semantic-commits`.
 - [ ] **Prueba de compatibilidad con Excel/LibreOffice.** Un test que abra el archivo con

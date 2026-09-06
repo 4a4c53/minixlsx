@@ -82,6 +82,20 @@ describe('parser XML lineal (anti-ReDoS)', () => {
 		assert.equal(attr(' r="A1', 'r'), null) // comilla sin cerrar
 	})
 
+	test('un <v/> vacío (openpyxl en fórmulas sin valor cacheado) no se convierte en 0', () => {
+		const buf = buildXlsx(
+			sheetWith(
+				'<row r="1"><c r="A1"><f>B1*2</f><v /></c><c r="B1" t="s"><v></v></c><c r="C1" t="n"><v>5</v></c></row>',
+			),
+		)
+		const s = read(buf).sheet('S')
+		assert.ok(s)
+		assert.equal(s.cell('A1'), null)
+		assert.equal(s.formula('A1'), 'B1*2')
+		assert.equal(s.cell('B1'), null)
+		assert.equal(s.cell('C1'), 5)
+	})
+
 	test('stripElements() elimina los <rPh> conservando el resto', () => {
 		assert.equal(stripElements('<t>漢字</t><rPh sb="0"><t>かんじ</t></rPh><t>!</t>', 'rPh'), '<t>漢字</t><t>!</t>')
 	})
