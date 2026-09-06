@@ -1,5 +1,18 @@
 import { colToName, MAX_COLS, MAX_ROWS, parseRef } from '#minixlsx/utils'
 
+/**
+ * Límite predeterminado de celdas (filas × columnas) que `toRows()` y `toObjects()` aceptan
+ * materializar. Ambos construyen la matriz densa del rango ocupado, así que un archivo con
+ * una sola celda en una esquina lejana (p. ej. XFD1048576) forzaría miles de millones de
+ * entradas y agotaría la memoria. Se puede ajustar por llamada con la opción `maxCells`.
+ */
+export const DEFAULT_MAX_CELLS = 20_000_000
+
+export interface DenseOptions {
+	/** Máximo de celdas (rowCount × colCount) a materializar; `Infinity` desactiva el límite. */
+	maxCells?: number
+}
+
 /** Valor que puede contener una celda. */
 export type CellValue = string | number | boolean | Date | null
 
@@ -100,14 +113,27 @@ export class Sheet {
 		return this._maxCol
 	}
 
+	/** @internal Rechaza materializar un rango denso mayor que `maxCells`. */
+	_checkDense(maxCells: number): void {
+		if (!(maxCells > 0)) throw new RangeError('maxCells debe ser un número positivo')
+		const cells = this._maxRow * this._maxCol
+		if (cells > maxCells) {
+			throw new RangeError(
+				`La hoja "${this.name}" ocupa ${this._maxRow} filas × ${this._maxCol} columnas (${cells} celdas), ` +
+					`por encima del límite de ${maxCells}. Use cellAt() o eleve la opción maxCells si el tamaño es legítimo.`,
+			)
+		}
+	}
+
 	/** Todos los datos como matriz de filas; celdas vacías como null. */
-	toRows(): CellValue[][] {
+	toRows({ maxCells = DEFAULT_MAX_CELLS }: DenseOptions = {}): CellValue[][] {
+		this._checkDense(maxCells)
 		const out: CellValue[][] = []
-		for (let r = 1; r <= this._maxRow; r++) {
-			// const row: CellValue[] = new Array(this._maxCol).fill(null)
-			const row: CellValue[] = Array.from({ length: this._maxCol }, () => null)
-			for (let c = 1; c <= this._maxCol; c++) row[c - 1] = this.cellAt(r, c)
-			out.push(row)
+		for (let r = 0; r < this._maxRow; r++) out.push(new Array<CellValue>(this._maxCol).fill(null))
+		// Recorre solo las celdas pobladas en lugar de consultar el Map por cada posición del rectángulo.
+		for (const [key, cell] of this._cells) {
+			const sep = key.indexOf(',')
+			out[+key.slice(0, sep) - 1][+key.slice(sep + 1) - 1] = cell.value
 		}
 		return out
 	}
@@ -116,7 +142,11 @@ export class Sheet {
 	 * Datos como array de objetos usando una fila como cabecera.
 	 * Cabeceras vacías usan la letra de columna. Filas totalmente vacías se omiten.
 	 */
-	toObjects({ headerRow = 1 }: { headerRow?: number } = {}): Record<string, CellValue>[] {
+	toObjects({
+		headerRow = 1,
+		maxCells = DEFAULT_MAX_CELLS,
+	}: { headerRow?: number } & DenseOptions = {}): Record<string, CellValue>[] {
+		this._checkDense(maxCells)
 		const headers: string[] = []
 		for (let c = 1; c <= this._maxCol; c++) {
 			const v = this.cellAt(headerRow, c)
@@ -124,14 +154,15 @@ export class Sheet {
 		}
 		const out: Record<string, CellValue>[] = []
 		for (let r = headerRow + 1; r <= this._maxRow; r++) {
-			const obj: Record<string, CellValue> = {}
 			let hasData = false
-			headers.forEach((h, i) => {
+			const entries = headers.map((h, i): [string, CellValue] => {
 				const v = this.cellAt(r, i + 1)
 				if (v != null) hasData = true
-				obj[h] = v
+				return [h, v]
 			})
-			if (hasData) out.push(obj)
+			// Object.fromEntries define propiedades propias: una cabecera "__proto__" tomada del
+			// archivo queda como clave normal en lugar de reemplazar el prototipo del objeto.
+			if (hasData) out.push(Object.fromEntries(entries))
 		}
 		return out
 	}

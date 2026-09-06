@@ -142,8 +142,8 @@ class Sheet {
 	formula(ref: string): string | null
 	get rowCount(): number
 	get colCount(): number
-	toRows(): CellValue[][]
-	toObjects(opts?: { headerRow?: number }): Record<string, CellValue>[]
+	toRows(opts?: { maxCells?: number }): CellValue[][]
+	toObjects(opts?: { headerRow?: number; maxCells?: number }): Record<string, CellValue>[]
 }
 
 read(data: Buffer | Uint8Array, opts?: ReadOptions): Workbook
@@ -151,6 +151,7 @@ readFile(path: string, opts?: ReadOptions): Workbook
 
 interface ReadOptions {
 	invalidSheetNames?: 'error' | 'preserve' // default: 'error'
+	maxDecompressedSize?: number // default: 1 GiB
 }
 ```
 
@@ -219,8 +220,18 @@ Writing a workbook throws an error if:
 Reading a workbook throws a descriptive error instead of silently producing corrupt or incorrect data if:
 
 - The `.xlsx` container is not a valid ZIP, is truncated, has a corrupt CRC, contains duplicate parts, or requires ZIP64 (>4 GB entries), which minixlsx doesn't support.
-- A single compressed entry would decompress far beyond its declared size (a "zip bomb"-style archive).
-- A cell reference, sheet name, or date value in the XML is malformed.
+- The archive would decompress beyond the configured budget (a "zip bomb"-style archive). Each entry is capped at 1 GiB, each XML part at 256 MiB, and the whole archive at `maxDecompressedSize` (default 1 GiB). Declared sizes are not trusted: the limit is enforced on the actual inflated output.
+- A cell reference, sheet name, date value, or XML character reference is malformed, or an element is left unclosed.
+
+### Hardening against untrusted files
+
+minixlsx is designed to be safe to point at files uploaded by third parties:
+
+- The XML parser walks the document with linear `indexOf` scans instead of backtracking regular expressions, so a crafted file with thousands of unclosed tags fails fast with a descriptive error instead of hanging the process (ReDoS).
+- `toRows()` and `toObjects()` materialize the dense `rowCount × colCount` rectangle. A file with a single cell at `XFD1048576` would otherwise require billions of entries, so both refuse rectangles above `maxCells` (default 20,000,000) with a `RangeError`. Pass `{ maxCells: Infinity }` when the size is legitimate, or use `cellAt()` for sparse access.
+- Column headers taken from the file are defined as own properties in `toObjects()`, so a header named `__proto__` cannot alter the prototype of the returned objects.
+- XML character references are decoded in a single pass (`&#38;lt;` is the literal text `&lt;`), and references outside the Unicode range raise a descriptive error instead of a bare `RangeError`.
+- No XML entities are expanded beyond the five predefined ones, so there is no XXE or "billion laughs" exposure. ZIP entry names never touch the filesystem, and formulas are read as plain text and never evaluated.
 
 ### Sheet names
 

@@ -11,9 +11,19 @@ export interface ZipEntry {
 // que esta implementación (sin soporte ZIP64) no puede leer de forma fiable.
 const ZIP64_MAGIC = 0xffffffff
 
-// Límite defensivo por entrada al descomprimir: evita que una "bomba" (pocos KB
-// comprimidos que se expanden a GB) agote la memoria del proceso.
-const MAX_ENTRY_SIZE = 1024 * 1024 * 1024 // 1 GiB
+// Límites defensivos al descomprimir: evitan que una "bomba" (pocos KB comprimidos
+// que se expanden a GB) agote la memoria del proceso. El límite por entrada no basta
+// solo, porque un ZIP puede declarar hasta 65535 entradas; por eso hay además un
+// presupuesto total para el conjunto del archivo.
+export const MAX_ENTRY_SIZE = 1024 * 1024 * 1024 // 1 GiB
+export const MAX_TOTAL_SIZE = 1024 * 1024 * 1024 // 1 GiB
+
+export interface UnzipOptions {
+	/** Tamaño máximo descomprimido de una entrada individual (predeterminado: 1 GiB). */
+	maxEntrySize?: number
+	/** Tamaño máximo descomprimido acumulado de todas las entradas (predeterminado: 1 GiB). */
+	maxTotalSize?: number
+}
 
 const CRC_TABLE = new Uint32Array(256)
 for (let n = 0; n < 256; n++) {
@@ -102,7 +112,11 @@ export function zipSync(files: ZipEntry[]): Buffer {
 }
 
 /** Extrae un ZIP en memoria como Map de nombre → contenido. */
-export function unzipSync(buf: Buffer): Map<string, Buffer> {
+export function unzipSync(buf: Buffer, opts: UnzipOptions = {}): Map<string, Buffer> {
+	const { maxEntrySize = MAX_ENTRY_SIZE, maxTotalSize = MAX_TOTAL_SIZE } = opts
+	if (!(maxEntrySize > 0) || !(maxTotalSize > 0))
+		throw new RangeError('Los límites de descompresión deben ser positivos')
+	let total = 0
 	let eocd = -1
 	const stop = Math.max(0, buf.length - 22 - 65_535)
 	for (let i = buf.length - 22; i >= stop; i--) {
@@ -135,8 +149,11 @@ export function unzipSync(buf: Buffer): Map<string, Buffer> {
 		if (csize === ZIP64_MAGIC || usize === ZIP64_MAGIC || localOff === ZIP64_MAGIC) {
 			throw new Error('Archivos ZIP64 no soportados (entradas > 4 GB)')
 		}
-		if (usize > MAX_ENTRY_SIZE) {
+		if (usize > maxEntrySize) {
 			throw new Error('Entrada ZIP demasiado grande: posible bomba de descompresión')
+		}
+		if (total + usize > maxTotalSize) {
+			throw new Error('El contenido descomprimido supera el límite total: posible bomba de descompresión')
 		}
 		if (ptr + 46 + nameLen > buf.length) throw new Error('Directorio central corrupto: nombre fuera de rango')
 		const name = buf.toString('utf8', ptr + 46, ptr + 46 + nameLen)
@@ -155,7 +172,9 @@ export function unzipSync(buf: Buffer): Map<string, Buffer> {
 		let data: Buffer
 		if (method === 8) {
 			try {
-				data = inflateRawSync(raw, { maxOutputLength: MAX_ENTRY_SIZE })
+				// El tope real lo impone zlib sobre la salida efectiva, no sobre el tamaño declarado
+				// (que un archivo malicioso puede falsear): nunca se expande más allá del presupuesto.
+				data = inflateRawSync(raw, { maxOutputLength: Math.min(maxEntrySize, maxTotalSize - total) })
 			} catch (err) {
 				throw new Error(`No se pudo descomprimir "${name}": ${err instanceof Error ? err.message : String(err)}`)
 			}
@@ -165,7 +184,9 @@ export function unzipSync(buf: Buffer): Map<string, Buffer> {
 			throw new Error(`Método de compresión no soportado: ${method}`)
 		}
 
+		if (data.length !== usize) throw new Error(`Tamaño declarado incorrecto para "${name}": el archivo está corrupto`)
 		if (crc32(data) !== crc) throw new Error(`CRC inválido para "${name}": el archivo está corrupto`)
+		total += data.length
 
 		files.set(name, data)
 		ptr += 46 + nameLen + extraLen + commentLen
