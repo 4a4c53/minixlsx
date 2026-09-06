@@ -22,13 +22,40 @@ describe('dimensiones de la hoja', () => {
 		assert.equal(s.colCount, 3) // la columna máxima no retrocede
 	})
 
-	test('borrar una celda no reduce las dimensiones', () => {
+	test('borrar la celda más lejana reduce las dimensiones al rango realmente ocupado', () => {
 		const s = newSheet()
+		s.setCell('A1', 'a')
 		s.setCell('C3', 'x')
 		s.setCell('C3', null)
 		assert.equal(s.cell('C3'), null)
+		assert.equal(s.rowCount, 1)
+		assert.equal(s.colCount, 1)
+		s.setCell('A1', null)
+		assert.equal(s.rowCount, 0)
+		assert.equal(s.colCount, 0)
+	})
+
+	test('borrar una celda interior no cambia las dimensiones', () => {
+		const s = newSheet()
+		s.setCell('B2', 'x')
+		s.setCell('C3', 'y')
+		s.setCell('B2', null)
 		assert.equal(s.rowCount, 3)
 		assert.equal(s.colCount, 3)
+	})
+
+	test('las filas reservadas por addRow se conservan aunque se borren sus celdas', () => {
+		const s = newSheet()
+		s.addRow([null, null]) // fila 1 vacía, reservada
+		s.addRow(['a']) // fila 2
+		s.setCellAt(5, 4, 'lejos')
+		s.setCellAt(5, 4, null)
+		assert.equal(s.rowCount, 2) // vuelve a la última fila añadida, no a 5
+		assert.equal(s.colCount, 1)
+		s.setCell('A2', null)
+		assert.equal(s.rowCount, 2) // addRow reservó la fila 2 aunque ahora esté vacía
+		s.addRow(['b'])
+		assert.equal(s.cellAt(3, 1), 'b')
 	})
 })
 
