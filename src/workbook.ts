@@ -54,6 +54,12 @@ export class Workbook {
 export const STYLE_DATE = 1
 export const STYLE_DATETIME = 2
 
+/** Atributos de una celda de fecha: el estilo distingue fecha de fecha y hora. */
+function dateCellAttrs(d: Date): string {
+	const hasTime = d.getHours() || d.getMinutes() || d.getSeconds() || d.getMilliseconds()
+	return ` s="${hasTime ? STYLE_DATETIME : STYLE_DATE}"`
+}
+
 function sheetToXml(sheet: Sheet, sharedIdx: (s: string) => number): string {
 	// Recorre solo las celdas realmente pobladas (no el rectángulo maxRow×maxCol),
 	// para que hojas dispersas con una celda en una esquina lejana no exploten en coste.
@@ -91,6 +97,11 @@ function sheetToXml(sheet: Sheet, sharedIdx: (s: string) => number): string {
 			} else if (typeof v === 'boolean') {
 				attrs = ' t="b"'
 				inner += `<v>${v ? 1 : 0}</v>`
+			} else if (v instanceof Date) {
+				// Sin esta rama el valor cacheado se perdía en silencio: la celda salía
+				// como <f> sin <v> y al releerla el valor era null.
+				attrs = dateCellAttrs(v)
+				inner += `<v>${dateToSerial(v)}</v>`
 			}
 		} else if (typeof v === 'number') {
 			inner = `<v>${v}</v>`
@@ -98,8 +109,7 @@ function sheetToXml(sheet: Sheet, sharedIdx: (s: string) => number): string {
 			attrs = ' t="b"'
 			inner = `<v>${v ? 1 : 0}</v>`
 		} else if (v instanceof Date) {
-			const hasTime = v.getHours() || v.getMinutes() || v.getSeconds() || v.getMilliseconds()
-			attrs = ` s="${hasTime ? STYLE_DATETIME : STYLE_DATE}"`
+			attrs = dateCellAttrs(v)
 			inner = `<v>${dateToSerial(v)}</v>`
 		} else {
 			attrs = ' t="s"'

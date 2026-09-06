@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, test } from 'node:test'
 
-import { read, Workbook } from '#minixlsx/index'
+import { read, readFile, Workbook } from '#minixlsx/index'
+import { unzipSync } from '#minixlsx/zip'
 
 import type { Sheet } from '#minixlsx/index'
+
+import { buildXlsx, workbook, worksheet } from './helpers/xlsx.ts'
 
 function getSheet(wb: Workbook, name: string | number): Sheet {
 	const s = wb.sheet(name)
@@ -133,5 +139,164 @@ describe('validaciones y edición', () => {
 		s.setCell('A1', 'algo')
 		s.setCell('A1', null)
 		assert.equal(s.cell('A1'), null)
+	})
+})
+
+describe('fórmulas con valor cacheado', () => {
+	/** Escribe A1 con la entrada dada y devuelve la hoja releída. */
+	function roundtrip(input: Parameters<Sheet['setCell']>[1]): Sheet {
+		const wb = new Workbook()
+		wb.addSheet('F').setCell('A1', input)
+		return getSheet(read(wb.toBuffer()), 'F')
+	}
+
+	test('valor numérico', () => {
+		const s = roundtrip({ formula: 'SUM(B1:C1)', value: 42 })
+		assert.equal(s.cell('A1'), 42)
+		assert.equal(s.formula('A1'), 'SUM(B1:C1)')
+	})
+
+	test('valor de texto', () => {
+		const s = roundtrip({ formula: 'CONCAT(B1,C1)', value: 'hola' })
+		assert.equal(s.cell('A1'), 'hola')
+		assert.equal(s.formula('A1'), 'CONCAT(B1,C1)')
+	})
+
+	test('valor booleano', () => {
+		const s = roundtrip({ formula: 'ISNUMBER(B1)', value: false })
+		assert.equal(s.cell('A1'), false)
+		assert.equal(s.formula('A1'), 'ISNUMBER(B1)')
+	})
+
+	test('valor de fecha sin hora', () => {
+		const fecha = new Date(2026, 6, 2)
+		const s = roundtrip({ formula: 'TODAY()', value: fecha })
+		const v = s.cell('A1')
+		assert.ok(v instanceof Date, 'el valor cacheado de fecha se perdía al escribir')
+		assert.equal(v.getTime(), fecha.getTime())
+		assert.equal(s.formula('A1'), 'TODAY()')
+	})
+
+	test('valor de fecha con hora', () => {
+		const momento = new Date(2026, 6, 2, 14, 35, 20)
+		const s = roundtrip({ formula: 'NOW()', value: momento })
+		const v = s.cell('A1')
+		assert.ok(v instanceof Date)
+		assert.equal(v.getTime(), momento.getTime())
+	})
+
+	test('sin valor cacheado se conserva solo la fórmula', () => {
+		const s = roundtrip({ formula: 'RAND()' })
+		assert.equal(s.cell('A1'), null)
+		assert.equal(s.formula('A1'), 'RAND()')
+	})
+
+	test('las fechas usan el estilo de fecha, no el tipo de texto', () => {
+		const wb = new Workbook()
+		wb.addSheet('F').setCell('A1', { formula: 'TODAY()', value: new Date(2026, 6, 2) })
+		wb.sheets[0].setCell('A2', { formula: 'NOW()', value: new Date(2026, 6, 2, 9, 0, 0) })
+		const xml = unzipSync(wb.toBuffer()).get('xl/worksheets/sheet1.xml')?.toString('utf8') ?? ''
+		assert.match(xml, /<c r="A1" s="1"><f>TODAY\(\)<\/f><v>46205<\/v><\/c>/)
+		assert.match(xml, /<c r="A2" s="2"><f>NOW\(\)<\/f><v>46205\.375<\/v><\/c>/)
+	})
+
+	test('una fórmula con caracteres reservados se escapa y se recupera', () => {
+		const s = roundtrip({ formula: 'IF(A2<5,"a&b","c")', value: 'a&b' })
+		assert.equal(s.formula('A1'), 'IF(A2<5,"a&b","c")')
+		assert.equal(s.cell('A1'), 'a&b')
+	})
+})
+
+describe('lectura y escritura en disco', () => {
+	test('writeFile y readFile completan el ida y vuelta', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'minixlsx-'))
+		try {
+			const path = join(dir, 'libro.xlsx')
+			const wb = new Workbook()
+			wb.addSheet('Disco').addRows([
+				['texto', 42, true],
+				[new Date(2026, 6, 2), null, 'fin'],
+			])
+			assert.equal(wb.writeFile(path), wb) // encadenable
+
+			const s = getSheet(readFile(path), 'Disco')
+			assert.equal(s.cell('A1'), 'texto')
+			assert.equal(s.cell('B1'), 42)
+			assert.equal(s.cell('C1'), true)
+			assert.ok(s.cell('A2') instanceof Date)
+			assert.equal(s.cell('C2'), 'fin')
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+
+	test('readFile propaga el error de un fichero inexistente', () => {
+		assert.throws(() => readFile(join(tmpdir(), 'no-existe-minixlsx.xlsx')), /ENOENT/)
+	})
+})
+
+describe('fidelidad de leer, modificar y escribir', () => {
+	test('un libro escrito por minixlsx sobrevive a un segundo ida y vuelta', () => {
+		const wb = new Workbook()
+		wb.addSheet('A').addRows([
+			['texto', 1.5, true],
+			[new Date(2026, 6, 2), { formula: 'SUM(B1:B2)', value: 1.5 }, null],
+		])
+		wb.addSheet('B').addRow(['otra hoja'])
+
+		const primera = read(wb.toBuffer())
+		const segunda = read(primera.toBuffer())
+
+		assert.deepEqual(segunda.sheetNames, primera.sheetNames)
+		for (const name of primera.sheetNames) {
+			assert.deepEqual(getSheet(segunda, name).toRows(), getSheet(primera, name).toRows())
+		}
+		assert.equal(getSheet(segunda, 'A').formula('B2'), 'SUM(B1:B2)')
+	})
+
+	test('modificar tras leer conserva el resto del contenido', () => {
+		const wb = new Workbook()
+		wb.addSheet('Datos').addRows([
+			['a', 'b'],
+			[1, 2],
+		])
+
+		const leido = read(wb.toBuffer())
+		getSheet(leido, 'Datos').setCell('C1', 'c').setCell('C2', 3)
+
+		const s = getSheet(read(leido.toBuffer()), 'Datos')
+		assert.deepEqual(s.toRows(), [
+			['a', 'b', 'c'],
+			[1, 2, 3],
+		])
+	})
+
+	// Conversiones con pérdida documentadas en el README: quedan fijadas para distinguir
+	// una decisión intencionada de 0.2.x de una regresión.
+	test('LIMITACIÓN: una celda de error pierde el marcador t="e" al reescribirse', () => {
+		// El código de error se conserva como texto, pero Excel deja de verlo como error.
+		// Con fórmula se reescribe como t="str" y sin ella como cadena compartida t="s".
+		const casos = [
+			{ celda: '<c r="A1" t="e"><f>1/0</f><v>#DIV/0!</v></c>', esperado: /<c r="A1" t="str">/ },
+			{ celda: '<c r="A1" t="e"><v>#REF!</v></c>', esperado: /<c r="A1" t="s">/ },
+		]
+		for (const { celda, esperado } of casos) {
+			const wb = read(buildXlsx({ workbookXml: workbook(), sheetXml: worksheet(`<row r="1">${celda}</row>`) }))
+			assert.equal(typeof wb.sheet('S')?.cell('A1'), 'string')
+
+			const xml = unzipSync(wb.toBuffer()).get('xl/worksheets/sheet1.xml')?.toString('utf8') ?? ''
+			assert.match(xml, esperado)
+			assert.doesNotMatch(xml, /t="e"/)
+		}
+	})
+
+	test('LIMITACIÓN: una fecha ISO t="d" se reescribe como serial del sistema 1900', () => {
+		const buf = buildXlsx({
+			workbookXml: workbook(),
+			sheetXml: worksheet('<row r="1"><c r="A1" t="d"><v>2026-07-02T00:00:00Z</v></c></row>'),
+		})
+		const xml = unzipSync(read(buf).toBuffer()).get('xl/worksheets/sheet1.xml')?.toString('utf8') ?? ''
+		assert.match(xml, /<c r="A1" s="\d"><v>\d+(\.\d+)?<\/v><\/c>/)
+		assert.doesNotMatch(xml, /t="d"/)
 	})
 })

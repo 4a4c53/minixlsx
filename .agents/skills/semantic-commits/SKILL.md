@@ -3,7 +3,7 @@ name: semantic-commits
 description: Inspect a Git worktree, group changes by intent, and create clean, atomic Conventional Commits with safe staging and explicit validation. Use when the user asks to review pending changes, suggest commit messages, organize changes into commits, or create commits from the current worktree.
 metadata:
   author: José Luis Silva
-  version: '1.0.0'
+  version: '1.1.0'
 ---
 
 # Semantic Commits
@@ -16,7 +16,10 @@ Turn a dirty worktree into atomic, reviewable commits while preserving user chan
 - **Commit**: only when explicitly asked to commit/create/organize commits.
 - **Ambiguous**: inspect read-only, propose grouping, then request authorization.
 
-Never amend, rebase, push, rewrite history, or sign commits unless explicitly requested.
+Never amend, rebase, push, or rewrite history unless explicitly requested.
+
+Signing is **not** in that list: it is a property of how the repository commits, not a destructive
+operation. Follow whatever signing the environment already configures — see §7.
 
 ## 2. Load repository rules
 
@@ -43,6 +46,16 @@ git log -20 --pretty=format:%s
 Also inspect relevant untracked files; they are absent from `git diff`. Use targeted inspection for large/binary files.
 
 Record pre-existing staged changes.
+
+Read the effective signing configuration here, before committing rather than after:
+
+```bash
+git config --show-origin --get-regexp 'commit\.gpgsign|tag\.gpgsign|gpg\.format|user\.signingkey|gpg\.(ssh\.)?program'
+```
+
+Check every scope, not just the repository: signing is often enabled in the global or environment-level
+config, and a repo with no signing settings of its own still inherits it. Record what you find; §7
+depends on it.
 
 Stop when:
 
@@ -144,10 +157,31 @@ Do not:
 Commit with the exact proposed message and current Git author:
 
 ```bash
-git commit --no-gpg-sign -m "<message>"
+git commit -m "<message>"
 ```
 
-unless repository signing rules override it.
+### Signing
+
+**Respect the configured default. Never pass `--no-gpg-sign` to opt out of it.**
+
+Decide from what §3 found:
+
+| Situation | Action |
+| --- | --- |
+| `commit.gpgsign=true` (any scope: environment, global, or repo) | Commit normally. The signature is intended — plain `git commit` picks it up. |
+| Signing off, and the user has not asked for it | Commit normally. Nothing to add. |
+| Signing off, but the user asks you to sign | Enable it for the commits you create, or hand over the commands under **Signing on someone else's behalf**. |
+
+The distinction that matters is *whose identity signs*, not whether a signature exists:
+
+- **The committer's own configured key** — including a key the environment manages for the agent
+  (`gpg.ssh.program`, a signing helper, a key in an agent). Signing here attests to who actually made
+  the commit, which is exactly what a signature is for. Use it.
+- **Another person's personal key.** Never sign with it, never configure it, never assume borrowing it
+  is fine because it is reachable. Hand over the commands instead.
+
+Only skip a configured signature when signing itself fails and blocks the commit. Then stop and report
+the failure — do not silently disable signing to get the commit through.
 
 If hooks fail or modify files, stop and inspect/report the resulting state; never retry blindly.
 
@@ -159,6 +193,17 @@ git log -1 --format='%h %s'
 ```
 
 Verify the commit hash before claiming success.
+
+When signing was expected, confirm the signature actually landed:
+
+```bash
+git cat-file -p HEAD | grep -q '^gpgsig ' && echo signed || echo UNSIGNED
+```
+
+Use that, not `%G?`. `%G?` reports **verification**, which is a separate question: with SSH signing it
+prints `N` and errors with `gpg.ssh.allowedSignersFile needs to be configured` whenever no allowed-signers
+file exists — even though the signature is present and correct. Reading that `N` as "unsigned" is a
+misdiagnosis; `gpgsig` in the raw object is the ground truth.
 
 Repeat only when the user requested all eligible changes. Leave unsafe, ambiguous, or unrelated changes pending.
 
@@ -173,15 +218,36 @@ Report:
 3. **Validation** — commands and pass/fail/skipped status with reason.
 4. **Remaining** — uncommitted, ambiguous, unsafe, ignored, or pre-existing staged changes.
 5. **Index changes** — any unrelated files/hunks selectively unstaged while reorganizing all changes.
+6. **Signing** — whether the new commits are signed, and if not, why. State it whenever signing was
+   configured, so a missed signature is visible immediately instead of surfacing later.
 
-Never claim a commit exists without successful `git commit` plus verified hash. Never claim a clean worktree without confirming `git status --short`.
+Never claim a commit exists without successful `git commit` plus verified hash. Never claim a clean worktree without confirming `git status --short`. Never claim commits are signed without checking for `gpgsig`.
 
-## Human signing
+## Signing on someone else's behalf
 
-If requested, provide commands for the user to sign afterward; never sign on their behalf:
+Applies only when the signature would carry **another person's** identity — see §7 for the distinction.
+Provide the commands; never run them with their key:
 
 ```bash
 git commit --amend --no-edit -S
 git rebase --exec 'git commit --amend --no-edit -S' HEAD~N
-git log --pretty=format:"%h %G? %s" -5
+git cat-file -p HEAD | grep '^gpgsig '
+```
+
+## Repairing commits that should have been signed
+
+Only when signing was configured, the commits missed it, and the user agrees to the rewrite. Rewriting
+pushed history needs their explicit approval first, and a force-push afterward — so never do it silently,
+and never on a branch shared with others or already under review.
+
+```bash
+git rebase --exec 'git commit --amend --no-edit -S' <upstream>
+git push --force-with-lease
+```
+
+Verify before reporting: every rewritten commit carries `gpgsig`, and the content is untouched.
+
+```bash
+git rev-parse HEAD^{tree}          # must match the tree recorded before the rebase
+git diff <old-head> HEAD           # must be empty
 ```
