@@ -25,6 +25,20 @@ interface CellData {
 }
 
 /**
+ * Normaliza la fórmula de una celda. OOXML almacena las fórmulas sin el `=` inicial que
+ * el usuario teclea en Excel; escribirlo tal cual (`<f>=SUM(A1)</f>`) produce un archivo
+ * que Excel pide reparar. Se acepta y elimina exactamente un `=` inicial, de modo que
+ * `'=SUM(A1)'` y `'SUM(A1)'` son equivalentes. Una fórmula vacía o ausente equivale a ninguna.
+ */
+function normalizeFormula(formula: string | null | undefined): string | null {
+	if (formula == null || formula === '') return null
+	if (typeof formula !== 'string') throw new TypeError('La fórmula debe ser una cadena')
+	const body = formula.startsWith('=') ? formula.slice(1) : formula
+	if (!body.length) throw new TypeError(`Fórmula vacía: "${formula}"`)
+	return body
+}
+
+/**
  * Una hoja de cálculo. Las celdas se indexan desde 1 (fila 1, columna 1 = "A1").
  * Valores soportados: string, number, boolean, Date, null y { value, formula }.
  */
@@ -51,7 +65,7 @@ export class Sheet {
 		}
 		let cell: CellData
 		if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
-			cell = { formula: value.formula ?? null, value: value.value ?? null }
+			cell = { formula: normalizeFormula(value.formula), value: value.value ?? null }
 		} else {
 			cell = { formula: null, value: value ?? null }
 		}

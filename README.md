@@ -182,6 +182,8 @@ interface ReadOptions {
 
 When reading files, cells formatted as Excel dates (built-in or custom date formats) are automatically converted to JavaScript `Date` objects.
 
+Formulas are stored the way OOXML stores them, without the leading `=` you would type in Excel. A leading `=` is accepted and stripped, so `{ formula: '=SUM(A1:B1)' }` and `{ formula: 'SUM(A1:B1)' }` are equivalent and `sheet.formula()` always returns `SUM(A1:B1)`. A formula that is only `=` throws a `TypeError`.
+
 ---
 
 ## Supported

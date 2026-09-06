@@ -12,7 +12,7 @@ propuesta; dentro de cada grupo, en orden de prioridad.
 - [ ] **Iteradores dispersos:** `Sheet.rows()` que produzca `[fila, CellValue[]]` solo para
   filas con datos, y `Sheet.cells()` con `{ row, col, value, formula }`. Complementan la
   defensa de `maxCells` y permiten procesar hojas grandes sin materializar la matriz.
-- [ ] **Normalizar fórmulas:** aceptar y quitar el `=` inicial (ver [bugs.md](bugs.md)).
+- [x] **Normalizar fórmulas:** aceptar y quitar el `=` inicial (ver [bugs.md](bugs.md)). Hecho en `claude/fix-formula-leading-equals`.
 - [ ] **Tipo `CellError`** para `#DIV/0!`, `#N/A`, etc., tanto en lectura como en escritura.
 - [ ] **Exportar tipos que faltan** ya resuelto en esta rama para `ReadOptions`,
   `DenseOptions` y los límites; falta `SheetNameError`/`isSheetNameError` si se decide
