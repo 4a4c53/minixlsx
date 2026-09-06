@@ -189,13 +189,17 @@ describe('toObjects', () => {
 		assert.deepEqual(s.toObjects(), [{ a: 2 }])
 	})
 
-	test('LIMITACIÓN: una cabecera __proto__ pierde su columna', () => {
+	test('una cabecera __proto__ se conserva como clave propia sin alterar el prototipo', () => {
 		const s = newSheet()
 		s.addRows([
 			['__proto__', 'b'],
 			[1, 2],
 		])
-		assert.deepEqual(s.toObjects(), [{ b: 2 }])
+		const [obj] = s.toObjects()
+		assert.equal(Object.getPrototypeOf(obj), Object.prototype)
+		assert.deepEqual(Object.keys(obj), ['__proto__', 'b'])
+		assert.equal(Object.getOwnPropertyDescriptor(obj, '__proto__')?.value, 1)
+		assert.equal(obj.b, 2)
 	})
 })
 
