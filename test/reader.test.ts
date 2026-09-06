@@ -25,9 +25,11 @@ describe('tipos de celda al leer', () => {
 		assert.equal(readA1(xml, { sharedStringsXml: SST }), 'compartida')
 	})
 
-	test('t="s" con índice fuera de rango devuelve null en vez de undefined', () => {
-		const xml = worksheet('<row r="1"><c r="A1" t="s"><v>99</v></c></row>')
-		assert.equal(readA1(xml, { sharedStringsXml: SST }), null)
+	test('t="s" con índice fuera de rango o no numérico es un archivo corrupto', () => {
+		const fuera = worksheet('<row r="1"><c r="A1" t="s"><v>99</v></c></row>')
+		assert.throws(() => readA1(fuera, { sharedStringsXml: SST }), /fuera de rango en A1 \(hoja "S"\): "99"/)
+		const noNum = worksheet('<row r="1"><c r="A1" t="s"><v>abc</v></c></row>')
+		assert.throws(() => readA1(noNum, { sharedStringsXml: SST }), /fuera de rango/)
 	})
 
 	test('t="str" devuelve el resultado cacheado de una fórmula como texto', () => {
@@ -233,5 +235,41 @@ describe('elementos con prefijo de namespace', () => {
 			stripElementPrefixes('<?xml version="1.0"?><t>hora: 10:30</t>'),
 			'<?xml version="1.0"?><t>hora: 10:30</t>',
 		)
+	})
+})
+
+describe('referencias de fila y celda corruptas', () => {
+	test('un <row r> no numérico o fuera del rango de Excel se rechaza nombrando la hoja', () => {
+		assert.throws(
+			() => readA1(worksheet('<row r="abc"><c r="A1"><v>1</v></c></row>')),
+			/Fila inválida en la hoja "S": r="abc"/,
+		)
+		assert.throws(
+			() => readA1(worksheet('<row r="0"><c r="A1"><v>1</v></c></row>')),
+			/Fila inválida en la hoja "S": r="0"/,
+		)
+		assert.throws(() => readA1(worksheet('<row r="1048577"><c><v>1</v></c></row>')), /Fila inválida/)
+	})
+
+	test('una celda cuya referencia no coincide con su <row> se rechaza', () => {
+		const xml = worksheet('<row r="1"><c r="A5"><v>1</v></c></row>')
+		assert.throws(() => readA1(xml), /La celda "A5" no pertenece a la fila 1 de la hoja "S"/)
+	})
+
+	test('una referencia de celda sin número de fila toma la fila del <row>', () => {
+		assert.equal(readA1(worksheet('<row r="1"><c r="A"><v>7</v></c></row>')), 7)
+	})
+
+	test('las filas y celdas sin atributo r se numeran de forma correlativa', () => {
+		const wb = read(
+			buildXlsx({
+				workbookXml: workbook(),
+				sheetXml: worksheet('<row><c><v>1</v></c><c><v>2</v></c></row><row><c><v>3</v></c></row>'),
+			}),
+		)
+		assert.deepEqual(wb.sheet('S')?.toRows(), [
+			[1, 2],
+			[3, null],
+		])
 	})
 })

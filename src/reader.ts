@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 
 import { isSheetNameError } from '#minixlsx/sheet-name'
-import { nameToCol, serialToDate } from '#minixlsx/utils'
+import { colToName, MAX_ROWS, nameToCol, serialToDate } from '#minixlsx/utils'
 import { Workbook } from '#minixlsx/workbook'
 import { attr, decodeText, elements, firstElement, stripElements, unesc } from '#minixlsx/xml'
 import { MAX_TOTAL_SIZE, unzipSync } from '#minixlsx/zip'
@@ -147,21 +147,33 @@ function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set
 
 	for (const row of elements(sheetData, 'row')) {
 		const rAttr = attr(row.attrs, 'r')
-		const rowNum = rAttr ? +rAttr : lastRow + 1
+		let rowNum = lastRow + 1
+		if (rAttr != null) {
+			rowNum = /^\d+$/.test(rAttr) ? +rAttr : Number.NaN
+			if (!(rowNum >= 1 && rowNum <= MAX_ROWS)) {
+				throw new Error(`Fila inválida en la hoja "${sheet.name}": r="${rAttr}"`)
+			}
+		}
 		lastRow = rowNum
 
 		let lastCol = 0
 		for (const { attrs, inner } of elements(row.inner, 'c')) {
-			const ref = attr(attrs, 'r')
+			const rawRef = attr(attrs, 'r')
 			let col: number
-			if (ref) {
-				const colMatch = /^[A-Za-z]+/.exec(ref)
-				if (!colMatch) throw new Error(`Referencia de celda inválida en el XML: "${ref}"`)
-				col = nameToCol(colMatch[0])
+			if (rawRef != null) {
+				const m = /^([A-Za-z]+)(\d*)$/.exec(rawRef)
+				if (!m) throw new Error(`Referencia de celda inválida en la hoja "${sheet.name}": "${rawRef}"`)
+				col = nameToCol(m[1])
+				// Excel no lo produce, pero un archivo manipulado puede situar `<c r="A5">` dentro de
+				// `<row r="1">`; antes se tomaba la fila del <row> y se ignoraba la de la celda.
+				if (m[2] && +m[2] !== rowNum) {
+					throw new Error(`La celda "${rawRef}" no pertenece a la fila ${rowNum} de la hoja "${sheet.name}"`)
+				}
 			} else {
 				col = lastCol + 1
 			}
 			lastCol = col
+			const ref = rawRef ?? colToName(col) + rowNum
 
 			const type = attr(attrs, 't') ?? 'n'
 			const style = +(attr(attrs, 's') ?? -1)
@@ -172,7 +184,13 @@ function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set
 
 			let value: CellValue = null
 			if (type === 's') {
-				value = vText != null ? (sst[+vText] ?? null) : null
+				if (vText != null) {
+					const idx = /^\d+$/.test(vText) ? +vText : Number.NaN
+					if (!(idx < sst.length)) {
+						throw new Error(`Índice de cadena compartida fuera de rango en ${ref} (hoja "${sheet.name}"): "${vText}"`)
+					}
+					value = sst[idx]
+				}
 			} else if (type === 'str' || type === 'e') {
 				value = vText != null ? decodeText(vText) : null
 			} else if (type === 'b') {
