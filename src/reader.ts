@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 
+import { shiftFormula } from '#minixlsx/formula'
 import { isSheetNameError } from '#minixlsx/sheet-name'
 import { colToName, MAX_ROWS, nameToCol, serialToDate } from '#minixlsx/utils'
 import { Workbook } from '#minixlsx/workbook'
@@ -144,6 +145,8 @@ function parseDateStyles(xml: string | null): Set<number> {
 function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set<number>, epoch1904: boolean): void {
 	const sheetData = firstElement(xml, 'sheetData')?.inner ?? ''
 	let lastRow = 0
+	// Fórmulas compartidas: la maestra (con texto) por `si`, con su posición, para derivar las dependientes.
+	const sharedFormulas = new Map<string, { formula: string; row: number; col: number }>()
 
 	for (const row of elements(sheetData, 'row')) {
 		const rAttr = attr(row.attrs, 'r')
@@ -180,7 +183,7 @@ function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set
 			// Un `<v/>` o `<v></v>` vacío (openpyxl lo escribe en fórmulas sin valor cacheado)
 			// equivale a no tener valor: no debe convertirse en 0 ni en el shared string 0.
 			const vText = firstElement(inner, 'v')?.inner || null
-			const fText = firstElement(inner, 'f')?.inner ?? null
+			const f = firstElement(inner, 'f')
 
 			let value: CellValue = null
 			if (type === 's') {
@@ -204,7 +207,16 @@ function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set
 				value = dateStyles.has(style) ? serialToDate(n, epoch1904) : n
 			}
 
-			const formula = fText?.length ? unesc(fText) : null
+			let formula = f?.inner.length ? unesc(f.inner) : null
+			if (f && attr(f.attrs, 't') === 'shared') {
+				const si = attr(f.attrs, 'si') ?? ''
+				if (formula) {
+					sharedFormulas.set(si, { col, formula, row: rowNum })
+				} else {
+					const master = sharedFormulas.get(si)
+					if (master) formula = shiftFormula(master.formula, rowNum - master.row, col - master.col)
+				}
+			}
 			if (value != null || formula) {
 				sheet.setCellAt(rowNum, col, formula ? { value, formula } : value)
 			}

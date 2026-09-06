@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { read } from '#minixlsx/index'
+import { read, Workbook } from '#minixlsx/index'
 import { stripElementPrefixes } from '#minixlsx/reader'
 import { zipSync } from '#minixlsx/zip'
 
@@ -271,5 +271,60 @@ describe('referencias de fila y celda corruptas', () => {
 			[1, 2],
 			[3, null],
 		])
+	})
+})
+
+describe('fórmulas compartidas', () => {
+	// Excel escribe la fórmula solo en la celda maestra; las dependientes llevan
+	// `<f t="shared" si="N"/>` vacío y se obtienen desplazando las referencias relativas.
+	const readSheet = (rows: string) => {
+		const s = read(buildXlsx({ workbookXml: workbook(), sheetXml: worksheet(rows) })).sheet('S')
+		assert.ok(s)
+		return s
+	}
+
+	test('las celdas dependientes reciben la fórmula maestra desplazada', () => {
+		const s = readSheet(
+			'<row r="1"><c r="A1"><f t="shared" ref="A1:A3" si="0">B1*2+$B$1</f><v>2</v></c></row>' +
+				'<row r="2"><c r="A2"><f t="shared" si="0"/><v>4</v></c></row>' +
+				'<row r="3"><c r="A3"><f t="shared" si="0"/><v>6</v></c></row>',
+		)
+		assert.equal(s.formula('A1'), 'B1*2+$B$1')
+		assert.equal(s.formula('A2'), 'B2*2+$B$1')
+		assert.equal(s.formula('A3'), 'B3*2+$B$1')
+		assert.deepEqual(
+			s.toRows().map((r) => r[0]),
+			[2, 4, 6],
+		) // los valores cacheados se conservan
+	})
+
+	test('el desplazamiento cubre filas y columnas y varios grupos si', () => {
+		const s = readSheet(
+			'<row r="1"><c r="A1"><f t="shared" ref="A1:B2" si="0">C1</f></c><c r="B1"><f t="shared" si="0"/></c>' +
+				'<c r="D1"><f t="shared" ref="D1:D2" si="1">SUM(A:A)</f></c></row>' +
+				'<row r="2"><c r="A2"><f t="shared" si="0"/></c><c r="B2"><f t="shared" si="0"/></c>' +
+				'<c r="D2"><f t="shared" si="1"/></c></row>',
+		)
+		assert.equal(s.formula('B1'), 'D1')
+		assert.equal(s.formula('A2'), 'C2')
+		assert.equal(s.formula('B2'), 'D2')
+		assert.equal(s.formula('D2'), 'SUM(A:A)')
+	})
+
+	test('una dependiente sin maestra conocida conserva el valor y queda sin fórmula', () => {
+		const s = readSheet('<row r="2"><c r="A2"><f t="shared" si="7"/><v>4</v></c></row>')
+		assert.equal(s.cell('A2'), 4)
+		assert.equal(s.formula('A2'), null)
+	})
+
+	test('las fórmulas compartidas sobreviven a la reescritura como fórmulas normales', () => {
+		const s = readSheet(
+			'<row r="1"><c r="A1"><f t="shared" ref="A1:A2" si="0">B1*2</f><v>2</v></c></row>' +
+				'<row r="2"><c r="A2"><f t="shared" si="0"/><v>4</v></c></row>',
+		)
+		const wb = new Workbook()
+		wb.addSheet('S').setCell('A2', { formula: s.formula('A2'), value: s.cell('A2') })
+		const reread = read(wb.toBuffer()).sheet('S')
+		assert.equal(reread?.formula('A2'), 'B2*2')
 	})
 })
