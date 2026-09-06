@@ -74,4 +74,37 @@ describe('unzipSync', () => {
 		])
 		assert.throws(() => unzipSync(zipped), /duplicada/)
 	})
+	test('unzip: rechaza un método de compresión que no sea store ni deflate', () => {
+		const zipped = Buffer.from(zipSync([{ data: Buffer.from('hola mundo'), name: 'a.txt' }]))
+		const p = zipped.indexOf(CENTRAL_SIG)
+		zipped.writeUInt16LE(99, p + 10) // 99 no es ni 0 (store) ni 8 (deflate)
+		assert.throws(() => unzipSync(zipped), /Método de compresión no soportado: 99/)
+	})
+
+	test('unzip: rechaza un desplazamiento de encabezado local que no apunta a uno', () => {
+		const zipped = Buffer.from(zipSync([{ data: Buffer.from('hola mundo'), name: 'a.txt' }]))
+		const p = zipped.indexOf(CENTRAL_SIG)
+		zipped.writeUInt32LE(999_999, p + 42) // fuera del archivo
+		assert.throws(() => unzipSync(zipped), /Encabezado local corrupto/)
+	})
+
+	test('unzip: rechaza una entrada cuyo tamaño declarado sería una bomba de descompresión', () => {
+		const zipped = Buffer.from(zipSync([{ data: Buffer.from('hola mundo'), name: 'a.txt' }]))
+		const p = zipped.indexOf(CENTRAL_SIG)
+		zipped.writeUInt32LE(2 ** 31, p + 24) // 2 GiB descomprimidos declarados, por encima del techo
+		assert.throws(() => unzipSync(zipped), /bomba de descompresión/)
+	})
+
+	test('unzip: envuelve el fallo de inflado indicando la entrada afectada', () => {
+		// Un payload largo se almacena comprimido; corromper su interior rompe el flujo deflate
+		// sin tocar tamaños ni CRC, de modo que falla el inflado y no otra comprobación previa.
+		const zipped = Buffer.from(zipSync([{ data: Buffer.from('x'.repeat(5000)), name: 'a.txt' }]))
+		zipped[40] ^= 0xff
+		zipped[41] ^= 0xff
+		assert.throws(() => unzipSync(zipped), /No se pudo descomprimir "a\.txt"/)
+	})
+
+	test('unzip: acepta un archivo sin entradas', () => {
+		assert.equal(unzipSync(zipSync([])).size, 0)
+	})
 })

@@ -1,6 +1,6 @@
 {
 	"name": "minixlsx",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "A tiny, zero-dependency library for reading and writing Excel (.xlsx) files in Node.js.",
 	"keywords": [
 		"excel",
@@ -43,7 +43,8 @@
 		"lint": "biome check",
 		"lint:fix": "biome check --write",
 		"prepack": "pnpm build",
-		"test": "node --conditions=minixlsx-dev --test",
+		"test": "node --conditions=minixlsx-dev --test 'test/**/*.test.ts'",
+		"test:coverage": "node --conditions=minixlsx-dev --test --experimental-test-coverage --test-coverage-exclude='test/**' --test-coverage-lines=99 --test-coverage-branches=93 --test-coverage-functions=100 'test/**/*.test.ts'",
 		"typecheck": "tsc"
 	},
 	"devDependencies": {

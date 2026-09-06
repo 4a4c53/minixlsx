@@ -327,6 +327,17 @@ The standard `development` condition is avoided on purpose: bundlers such as Vit
 - Date conversion uses local wall-clock components. Serializing a workbook in one timezone and opening it in another may change the displayed time for date-time values.
 - Reading correctly detects and honors the legacy **1904 date system** (used by older Excel for Mac files). Writing always uses the standard 1900 system, regardless of which system the original file used.
 
+### Lossy conversions on read → modify → write
+
+Cell values always survive a round trip, but two cell *types* are normalized on the way out. Both are
+deliberate simplifications of a minimal writer, not bugs, and both are pinned by tests:
+
+- **Error cells** (`t="e"`, e.g. `#DIV/0!`) are read as their textual code and written back as ordinary
+  text — as a cached formula result when the cell has a formula, otherwise as a shared string. The value
+  is preserved; Excel simply stops treating it as an error.
+- **ISO 8601 date cells** (`t="d"`) are read as a `Date` and written back as a numeric serial in the
+  standard 1900 system with a date style applied, which is how Excel itself stores dates.
+
 ---
 
 ## License
