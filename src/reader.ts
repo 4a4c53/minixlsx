@@ -56,6 +56,18 @@ function isDateFormatCode(code: string): boolean {
 	return /[ymdhs]/i.test(stripped)
 }
 
+// Algunos productores (Open XML SDK, herramientas .NET) prefijan los elementos con el
+// namespace (`<x:worksheet>`, `<x:row>`). Los helpers de xml.ts buscan nombres sin prefijo,
+// así que cada parte se normaliza una vez al cargarla. Solo se tocan los nombres de elemento;
+// los atributos (`r:id`, `xmlns:x`) se conservan. El patrón no tiene cuantificadores anidados:
+// una pasada lineal.
+const PREFIXED_ELEMENT = /<(\/?)[A-Za-z_][\w.-]*:(?=[A-Za-z_])/g
+
+/** @internal Elimina el prefijo de namespace de todas las etiquetas de apertura y cierre. */
+export function stripElementPrefixes(xml: string): string {
+	return xml.replace(PREFIXED_ELEMENT, '<$1')
+}
+
 function dirname(p: string): string {
 	const i = p.lastIndexOf('/')
 	return i < 0 ? '' : p.slice(0, i)
@@ -201,7 +213,7 @@ export function read(data: Buffer | Uint8Array, opts: ReadOptions = {}): Workboo
 		if (part.length > MAX_PART_SIZE) {
 			throw new Error(`La parte "${name}" supera el tamaño máximo admitido (${MAX_PART_SIZE} bytes)`)
 		}
-		return part.toString('utf8')
+		return stripElementPrefixes(part.toString('utf8'))
 	}
 
 	const rootXml = getXml('_rels/.rels')

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
 import { read } from '#minixlsx/index'
+import { stripElementPrefixes } from '#minixlsx/reader'
 import { zipSync } from '#minixlsx/zip'
 
 import type { CellValue } from '#minixlsx/index'
@@ -197,5 +198,40 @@ describe('contenedores no válidos', () => {
 	test('un libro sin hojas se rechaza', () => {
 		const workbookXml = `${XML_DECL}<workbook xmlns="${NS}" xmlns:r="${NSR}"><sheets/></workbook>`
 		assert.throws(() => read(buildXlsx({ workbookXml, sheetXml: worksheet('') })), /no contiene hojas/)
+	})
+})
+
+describe('elementos con prefijo de namespace', () => {
+	// Open XML SDK y otras herramientas .NET escriben `<x:worksheet xmlns:x="…">` con todos los
+	// elementos prefijados. Antes el lector devolvía una hoja vacía sin error.
+	const PREFIXED_WORKBOOK =
+		`${XML_DECL}<x:workbook xmlns:x="${NS}" xmlns:r="${NSR}">` +
+		'<x:sheets><x:sheet name="S" sheetId="1" r:id="rId1"/></x:sheets></x:workbook>'
+	const PREFIXED_SHEET =
+		`${XML_DECL}<x:worksheet xmlns:x="${NS}"><x:sheetData>` +
+		'<x:row r="1"><x:c r="A1"><x:v>42</x:v></x:c><x:c r="B1" t="s"><x:v>0</x:v></x:c>' +
+		'<x:c r="C1" t="inlineStr"><x:is><x:t>en línea</x:t></x:is></x:c></x:row>' +
+		'</x:sheetData></x:worksheet>'
+	const PREFIXED_SST = `${XML_DECL}<x:sst xmlns:x="${NS}" count="1" uniqueCount="1"><x:si><x:t>compartida</x:t></x:si></x:sst>`
+
+	test('lee libros cuyos elementos llevan prefijo de namespace', () => {
+		const wb = read(
+			buildXlsx({ workbookXml: PREFIXED_WORKBOOK, sheetXml: PREFIXED_SHEET, sharedStringsXml: PREFIXED_SST }),
+		)
+		const s = wb.sheet('S')
+		assert.ok(s)
+		assert.deepEqual(s.toRows(), [[42, 'compartida', 'en línea']])
+	})
+
+	test('los prefijos se quitan solo de los elementos, no de los atributos', () => {
+		assert.equal(
+			stripElementPrefixes('<x:c r="A1" xr:uid="u" t="s"><x:v>0</x:v></x:c>'),
+			'<c r="A1" xr:uid="u" t="s"><v>0</v></c>',
+		)
+		// Un `:` fuera de una etiqueta (texto, declaraciones, instrucciones de proceso) se respeta.
+		assert.equal(
+			stripElementPrefixes('<?xml version="1.0"?><t>hora: 10:30</t>'),
+			'<?xml version="1.0"?><t>hora: 10:30</t>',
+		)
 	})
 })
