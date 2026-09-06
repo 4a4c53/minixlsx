@@ -32,10 +32,14 @@ export class Workbook {
 		return this.sheets.map((s) => s.name)
 	}
 
-	/** Busca una hoja por nombre o índice (desde 0). */
+	/**
+	 * Busca una hoja por nombre o índice (desde 0). El nombre se compara sin distinguir
+	 * mayúsculas, igual que hace Excel y que la propia validación de unicidad de `addSheet`.
+	 */
 	sheet(nameOrIndex: string | number): Sheet | null {
 		if (typeof nameOrIndex === 'number') return this.sheets[nameOrIndex] ?? null
-		return this.sheets.find((s) => s.name === nameOrIndex) ?? null
+		const wanted = nameOrIndex.toLowerCase()
+		return this.sheets.find((s) => s.name.toLowerCase() === wanted) ?? null
 	}
 
 	/** Serializa el libro a un Buffer .xlsx. */

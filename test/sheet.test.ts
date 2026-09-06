@@ -220,11 +220,13 @@ describe('búsqueda de hojas en el libro', () => {
 		assert.equal(wb.sheet(-1), null)
 	})
 
-	test('la búsqueda por nombre distingue mayúsculas aunque la validación no', () => {
+	test('la búsqueda por nombre no distingue mayúsculas, igual que Excel y que la validación', () => {
 		const wb = new Workbook()
 		wb.addSheet('Datos')
 		assert.equal(wb.sheet('Datos')?.name, 'Datos')
-		assert.equal(wb.sheet('datos'), null)
+		assert.equal(wb.sheet('datos')?.name, 'Datos')
+		assert.equal(wb.sheet('DATOS')?.name, 'Datos')
+		assert.equal(wb.sheet('Dato'), null)
 	})
 
 	test('addSheet genera nombres correlativos cuando no se le pasa ninguno', () => {
