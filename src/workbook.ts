@@ -54,6 +54,19 @@ export class Workbook {
 export const STYLE_DATE = 1
 export const STYLE_DATETIME = 2
 
+/**
+ * Serial de Excel de una fecha, validado: por debajo de 0 (antes de 1899-12-30) Excel no
+ * puede mostrar la celda (`#####`), así que se rechaza al escribir en lugar de producir
+ * un archivo que parece correcto hasta que se abre.
+ */
+function dateSerial(d: Date, ref: string): number {
+	const serial = dateToSerial(d)
+	if (serial < 0) {
+		throw new RangeError(`La celda ${ref} contiene una fecha anterior a 1899-12-30, que Excel no puede representar`)
+	}
+	return serial
+}
+
 /** Atributos de una celda de fecha: el estilo distingue fecha de fecha y hora. */
 function dateCellAttrs(d: Date): string {
 	const hasTime = d.getHours() || d.getMinutes() || d.getSeconds() || d.getMilliseconds()
@@ -101,7 +114,7 @@ function sheetToXml(sheet: Sheet, sharedIdx: (s: string) => number): string {
 				// Sin esta rama el valor cacheado se perdía en silencio: la celda salía
 				// como <f> sin <v> y al releerla el valor era null.
 				attrs = dateCellAttrs(v)
-				inner += `<v>${dateToSerial(v)}</v>`
+				inner += `<v>${dateSerial(v, ref)}</v>`
 			}
 		} else if (typeof v === 'number') {
 			inner = `<v>${v}</v>`
@@ -110,7 +123,7 @@ function sheetToXml(sheet: Sheet, sharedIdx: (s: string) => number): string {
 			inner = `<v>${v ? 1 : 0}</v>`
 		} else if (v instanceof Date) {
 			attrs = dateCellAttrs(v)
-			inner = `<v>${dateToSerial(v)}</v>`
+			inner = `<v>${dateSerial(v, ref)}</v>`
 		} else {
 			attrs = ' t="s"'
 			inner = `<v>${sharedIdx(String(v))}</v>`
