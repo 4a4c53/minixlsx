@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs'
 import { isSheetNameError } from '#minixlsx/sheet-name'
 import { nameToCol, serialToDate } from '#minixlsx/utils'
 import { Workbook } from '#minixlsx/workbook'
-import { attr, decodeText, unesc } from '#minixlsx/xml'
-import { unzipSync } from '#minixlsx/zip'
+import { attr, decodeText, elements, firstElement, stripElements, unesc } from '#minixlsx/xml'
+import { MAX_TOTAL_SIZE, unzipSync } from '#minixlsx/zip'
 
 import type { CellValue, Sheet } from '#minixlsx/sheet'
 
@@ -26,7 +26,20 @@ export type InvalidSheetNamesMode = 'error' | 'preserve'
 
 export interface ReadOptions {
 	invalidSheetNames?: InvalidSheetNamesMode
+	/**
+	 * Presupuesto total (en bytes) para el contenido descomprimido de todas las partes del
+	 * contenedor. Protege frente a "bombas ZIP": un archivo pequeño que se expande a gigabytes.
+	 * Predeterminado: 1 GiB. Cada parte individual se limita además a `MAX_PART_SIZE`.
+	 */
+	maxDecompressedSize?: number
 }
+
+/**
+ * Tamaño máximo de una parte XML individual (256 MiB). V8 no puede crear cadenas de más de
+ * ~512 M caracteres, así que sin este límite una parte enorme fallaba con un error opaco
+ * de "Cannot create a string longer than…" en lugar de uno descriptivo.
+ */
+export const MAX_PART_SIZE = 256 * 1024 * 1024
 
 // numFmtId incorporados que Excel muestra como fecha u hora.
 const BUILTIN_DATE_FMTS = new Set([
@@ -63,9 +76,9 @@ function resolvePath(base: string, target: string): string {
 function parseRels(xml: string | null, baseDir: string): Map<string, string> {
 	const rels = new Map<string, string>()
 	if (!xml) return rels
-	for (const m of xml.matchAll(/<Relationship\b([^>]*?)\/?>/g)) {
-		const id = attr(m[1], 'Id')
-		const target = attr(m[1], 'Target')
+	for (const { attrs } of elements(xml, 'Relationship')) {
+		const id = attr(attrs, 'Id')
+		const target = attr(attrs, 'Target')
 		if (id && target) rels.set(id, resolvePath(baseDir, unesc(target)))
 	}
 	return rels
@@ -73,24 +86,23 @@ function parseRels(xml: string | null, baseDir: string): Map<string, string> {
 
 /** Extrae el texto de los `<t>` de un nodo, ignorando las guías fonéticas `<rPh>` (furigana japonesa). */
 function extractText(inner: string): string {
-	const withoutPhonetics = inner.replace(/<rPh\b[\s\S]*?<\/rPh>/g, '')
 	let text = ''
-	for (const t of withoutPhonetics.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) text += decodeText(t[1])
+	for (const t of elements(stripElements(inner, 'rPh'), 't')) text += decodeText(t.inner)
 	return text
 }
 
 function parseSharedStrings(xml: string | null): string[] {
 	const strings: string[] = []
 	if (!xml) return strings
-	for (const m of xml.matchAll(/<si>([\s\S]*?)<\/si>/g)) strings.push(extractText(m[1]))
+	for (const si of elements(xml, 'si')) strings.push(extractText(si.inner))
 	return strings
 }
 
 /** Indica si el libro usa el sistema de fechas 1904 (típico de Excel para Mac). */
 function isDate1904(wbXml: string): boolean {
-	const m = /<workbookPr\b([^>]*?)\/?>/.exec(wbXml)
-	if (!m) return false
-	const v = attr(m[1], 'date1904')
+	const el = firstElement(wbXml, 'workbookPr')
+	if (!el) return false
+	const v = attr(el.attrs, 'date1904')
 	return v === '1' || v === 'true'
 }
 
@@ -100,17 +112,17 @@ function parseDateStyles(xml: string | null): Set<number> {
 	if (!xml) return dateStyles
 
 	const customDateFmts = new Set<number>()
-	const numFmtsBlock = /<numFmts\b[\s\S]*?<\/numFmts>/.exec(xml)?.[0] ?? ''
-	for (const m of numFmtsBlock.matchAll(/<numFmt\b([^>]*?)\/?>/g)) {
-		const id = attr(m[1], 'numFmtId')
-		const code = attr(m[1], 'formatCode')
+	const numFmtsBlock = firstElement(xml, 'numFmts')?.inner ?? ''
+	for (const { attrs } of elements(numFmtsBlock, 'numFmt')) {
+		const id = attr(attrs, 'numFmtId')
+		const code = attr(attrs, 'formatCode')
 		if (id != null && code != null && isDateFormatCode(unesc(code))) customDateFmts.add(+id)
 	}
 
-	const cellXfsBlock = /<cellXfs\b[\s\S]*?<\/cellXfs>/.exec(xml)?.[0] ?? ''
+	const cellXfsBlock = firstElement(xml, 'cellXfs')?.inner ?? ''
 	let idx = 0
-	for (const m of cellXfsBlock.matchAll(/<xf\b([^>]*?)(?:\/>|>)/g)) {
-		const fmtId = +(attr(m[1], 'numFmtId') ?? 0)
+	for (const { attrs } of elements(cellXfsBlock, 'xf')) {
+		const fmtId = +(attr(attrs, 'numFmtId') ?? 0)
 		if (BUILTIN_DATE_FMTS.has(fmtId) || customDateFmts.has(fmtId)) dateStyles.add(idx)
 		idx++
 	}
@@ -118,20 +130,16 @@ function parseDateStyles(xml: string | null): Set<number> {
 }
 
 function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set<number>, epoch1904: boolean): void {
-	const rowRe = /<row\b([^>]*?)(\/>|>([\s\S]*?)<\/row>)/g
-	const cellRe = /<c\b([^>]*?)(\/>|>([\s\S]*?)<\/c>)/g
+	const sheetData = firstElement(xml, 'sheetData')?.inner ?? ''
 	let lastRow = 0
 
-	for (const rowMatch of xml.matchAll(rowRe)) {
-		const rAttr = attr(rowMatch[1], 'r')
+	for (const row of elements(sheetData, 'row')) {
+		const rAttr = attr(row.attrs, 'r')
 		const rowNum = rAttr ? +rAttr : lastRow + 1
 		lastRow = rowNum
-		const content = rowMatch[3] || ''
 
 		let lastCol = 0
-		for (const cellMatch of content.matchAll(cellRe)) {
-			const attrs = cellMatch[1]
-			const inner = cellMatch[3] || ''
+		for (const { attrs, inner } of elements(row.inner, 'c')) {
 			const ref = attr(attrs, 'r')
 			let col: number
 			if (ref) {
@@ -145,8 +153,10 @@ function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set
 
 			const type = attr(attrs, 't') ?? 'n'
 			const style = +(attr(attrs, 's') ?? -1)
-			const vText = /<v[^>]*>([\s\S]*?)<\/v>/.exec(inner)?.[1] ?? null
-			const fText = /<f[^>]*>([\s\S]*?)<\/f>/.exec(inner)?.[1] ?? null
+			// Un `<v/>` o `<v></v>` vacío (openpyxl lo escribe en fórmulas sin valor cacheado)
+			// equivale a no tener valor: no debe convertirse en 0 ni en el shared string 0.
+			const vText = firstElement(inner, 'v')?.inner || null
+			const fText = firstElement(inner, 'f')?.inner ?? null
 
 			let value: CellValue = null
 			if (type === 's') {
@@ -174,7 +184,7 @@ function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set
 
 /** Lee un libro desde un Buffer .xlsx. */
 export function read(data: Buffer | Uint8Array, opts: ReadOptions = {}): Workbook {
-	const { invalidSheetNames = 'error' } = opts
+	const { invalidSheetNames = 'error', maxDecompressedSize = MAX_TOTAL_SIZE } = opts
 	if (invalidSheetNames === 'preserve') {
 		throw new Error(
 			'invalidSheetNames: "preserve" todavía no está implementado en minixlsx 0.2. ' +
@@ -183,17 +193,24 @@ export function read(data: Buffer | Uint8Array, opts: ReadOptions = {}): Workboo
 	}
 
 	const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
-	const files = unzipSync(buf)
-	const getXml = (name: string | null): string | null =>
-		name != null ? (files.get(name)?.toString('utf8') ?? null) : null
+	const files = unzipSync(buf, { maxTotalSize: maxDecompressedSize })
+	const getXml = (name: string | null): string | null => {
+		if (name == null) return null
+		const part = files.get(name)
+		if (!part) return null
+		if (part.length > MAX_PART_SIZE) {
+			throw new Error(`La parte "${name}" supera el tamaño máximo admitido (${MAX_PART_SIZE} bytes)`)
+		}
+		return part.toString('utf8')
+	}
 
-	const rootRels = parseRels(getXml('_rels/.rels'), '')
+	const rootXml = getXml('_rels/.rels')
+	const rootRels = parseRels(rootXml, '')
 	let wbPath = 'xl/workbook.xml'
-	const rootXml = getXml('_rels/.rels') ?? ''
-	for (const m of rootXml.matchAll(/<Relationship\b([^>]*?)\/?>/g)) {
-		const type = attr(m[1], 'Type') ?? ''
+	for (const { attrs } of elements(rootXml ?? '', 'Relationship')) {
+		const type = attr(attrs, 'Type') ?? ''
 		if (type.endsWith('/officeDocument')) {
-			wbPath = rootRels.get(attr(m[1], 'Id') ?? '') ?? wbPath
+			wbPath = rootRels.get(attr(attrs, 'Id') ?? '') ?? wbPath
 			break
 		}
 	}
@@ -207,10 +224,10 @@ export function read(data: Buffer | Uint8Array, opts: ReadOptions = {}): Workboo
 	let sstPath: string | null = null
 	let stylesPath: string | null = null
 	if (relsXml) {
-		for (const m of relsXml.matchAll(/<Relationship\b([^>]*?)\/?>/g)) {
-			const type = attr(m[1], 'Type') ?? ''
-			if (type.endsWith('/sharedStrings')) sstPath = rels.get(attr(m[1], 'Id') ?? '') ?? null
-			else if (type.endsWith('/styles')) stylesPath = rels.get(attr(m[1], 'Id') ?? '') ?? null
+		for (const { attrs } of elements(relsXml, 'Relationship')) {
+			const type = attr(attrs, 'Type') ?? ''
+			if (type.endsWith('/sharedStrings')) sstPath = rels.get(attr(attrs, 'Id') ?? '') ?? null
+			else if (type.endsWith('/styles')) stylesPath = rels.get(attr(attrs, 'Id') ?? '') ?? null
 		}
 	}
 
@@ -219,9 +236,9 @@ export function read(data: Buffer | Uint8Array, opts: ReadOptions = {}): Workboo
 	const epoch1904 = isDate1904(wbXml)
 
 	const wb = new Workbook()
-	for (const m of wbXml.matchAll(/<sheet\b([^>]*?)\/?>/g)) {
-		const name = attr(m[1], 'name')
-		const rId = attr(m[1], 'r:id') ?? attr(m[1], 'r:Id')
+	for (const { attrs } of elements(wbXml, 'sheet')) {
+		const name = attr(attrs, 'name')
+		const rId = attr(attrs, 'r:id') ?? attr(attrs, 'r:Id')
 		if (name == null) continue
 		const decodedName = decodeText(name)
 		const index = wb.sheets.length
