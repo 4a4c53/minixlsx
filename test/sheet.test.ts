@@ -22,13 +22,40 @@ describe('dimensiones de la hoja', () => {
 		assert.equal(s.colCount, 3) // la columna máxima no retrocede
 	})
 
-	test('borrar una celda no reduce las dimensiones', () => {
+	test('borrar la celda más lejana reduce las dimensiones al rango realmente ocupado', () => {
 		const s = newSheet()
+		s.setCell('A1', 'a')
 		s.setCell('C3', 'x')
 		s.setCell('C3', null)
 		assert.equal(s.cell('C3'), null)
+		assert.equal(s.rowCount, 1)
+		assert.equal(s.colCount, 1)
+		s.setCell('A1', null)
+		assert.equal(s.rowCount, 0)
+		assert.equal(s.colCount, 0)
+	})
+
+	test('borrar una celda interior no cambia las dimensiones', () => {
+		const s = newSheet()
+		s.setCell('B2', 'x')
+		s.setCell('C3', 'y')
+		s.setCell('B2', null)
 		assert.equal(s.rowCount, 3)
 		assert.equal(s.colCount, 3)
+	})
+
+	test('las filas reservadas por addRow se conservan aunque se borren sus celdas', () => {
+		const s = newSheet()
+		s.addRow([null, null]) // fila 1 vacía, reservada
+		s.addRow(['a']) // fila 2
+		s.setCellAt(5, 4, 'lejos')
+		s.setCellAt(5, 4, null)
+		assert.equal(s.rowCount, 2) // vuelve a la última fila añadida, no a 5
+		assert.equal(s.colCount, 1)
+		s.setCell('A2', null)
+		assert.equal(s.rowCount, 2) // addRow reservó la fila 2 aunque ahora esté vacía
+		s.addRow(['b'])
+		assert.equal(s.cellAt(3, 1), 'b')
 	})
 })
 
@@ -209,13 +236,14 @@ describe('toObjects', () => {
 
 	// Los dos casos siguientes fijan limitaciones conocidas de 0.2.x: documentan lo que
 	// hoy ocurre para que un cambio de política sea visible en el diff, no un descuido.
-	test('LIMITACIÓN: con cabeceras duplicadas gana la última columna', () => {
+	test('las cabeceras duplicadas reciben sufijo en vez de pisarse', () => {
 		const s = newSheet()
 		s.addRows([
-			['a', 'a'],
-			[1, 2],
+			['a', 'a', 'a', 'a_2'],
+			[1, 2, 3, 4],
 		])
-		assert.deepEqual(s.toObjects(), [{ a: 2 }])
+		// La cuarta cabecera ya se llama "a_2", así que el sufijo salta hasta el primer nombre libre.
+		assert.deepEqual(s.toObjects(), [{ a: 1, a_2: 2, a_3: 3, a_2_2: 4 }])
 	})
 
 	test('una cabecera __proto__ se conserva como clave propia sin alterar el prototipo', () => {
@@ -249,11 +277,13 @@ describe('búsqueda de hojas en el libro', () => {
 		assert.equal(wb.sheet(-1), null)
 	})
 
-	test('la búsqueda por nombre distingue mayúsculas aunque la validación no', () => {
+	test('la búsqueda por nombre no distingue mayúsculas, igual que Excel y que la validación', () => {
 		const wb = new Workbook()
 		wb.addSheet('Datos')
 		assert.equal(wb.sheet('Datos')?.name, 'Datos')
-		assert.equal(wb.sheet('datos'), null)
+		assert.equal(wb.sheet('datos')?.name, 'Datos')
+		assert.equal(wb.sheet('DATOS')?.name, 'Datos')
+		assert.equal(wb.sheet('Dato'), null)
 	})
 
 	test('addSheet genera nombres correlativos cuando no se le pasa ninguno', () => {

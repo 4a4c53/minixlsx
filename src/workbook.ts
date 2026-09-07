@@ -32,10 +32,14 @@ export class Workbook {
 		return this.sheets.map((s) => s.name)
 	}
 
-	/** Busca una hoja por nombre o índice (desde 0). */
+	/**
+	 * Busca una hoja por nombre o índice (desde 0). El nombre se compara sin distinguir
+	 * mayúsculas, igual que hace Excel y que la propia validación de unicidad de `addSheet`.
+	 */
 	sheet(nameOrIndex: string | number): Sheet | null {
 		if (typeof nameOrIndex === 'number') return this.sheets[nameOrIndex] ?? null
-		return this.sheets.find((s) => s.name === nameOrIndex) ?? null
+		const wanted = nameOrIndex.toLowerCase()
+		return this.sheets.find((s) => s.name.toLowerCase() === wanted) ?? null
 	}
 
 	/** Serializa el libro a un Buffer .xlsx. */
@@ -53,6 +57,19 @@ export class Workbook {
 // Estilos fijos: 0 = general, 1 = fecha (numFmtId 14), 2 = fecha y hora (numFmtId 22).
 export const STYLE_DATE = 1
 export const STYLE_DATETIME = 2
+
+/**
+ * Serial de Excel de una fecha, validado: por debajo de 0 (antes de 1899-12-30) Excel no
+ * puede mostrar la celda (`#####`), así que se rechaza al escribir en lugar de producir
+ * un archivo que parece correcto hasta que se abre.
+ */
+function dateSerial(d: Date, ref: string): number {
+	const serial = dateToSerial(d)
+	if (serial < 0) {
+		throw new RangeError(`La celda ${ref} contiene una fecha anterior a 1899-12-30, que Excel no puede representar`)
+	}
+	return serial
+}
 
 /** Atributos de una celda de fecha: el estilo distingue fecha de fecha y hora. */
 function dateCellAttrs(d: Date): string {
@@ -101,7 +118,7 @@ function sheetToXml(sheet: Sheet, sharedIdx: (s: string) => number): string {
 				// Sin esta rama el valor cacheado se perdía en silencio: la celda salía
 				// como <f> sin <v> y al releerla el valor era null.
 				attrs = dateCellAttrs(v)
-				inner += `<v>${dateToSerial(v)}</v>`
+				inner += `<v>${dateSerial(v, ref)}</v>`
 			}
 		} else if (typeof v === 'number') {
 			inner = `<v>${v}</v>`
@@ -110,7 +127,7 @@ function sheetToXml(sheet: Sheet, sharedIdx: (s: string) => number): string {
 			inner = `<v>${v ? 1 : 0}</v>`
 		} else if (v instanceof Date) {
 			attrs = dateCellAttrs(v)
-			inner = `<v>${dateToSerial(v)}</v>`
+			inner = `<v>${dateSerial(v, ref)}</v>`
 		} else {
 			attrs = ' t="s"'
 			inner = `<v>${sharedIdx(String(v))}</v>`

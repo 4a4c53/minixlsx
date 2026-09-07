@@ -47,6 +47,8 @@ export class Sheet {
 	/** @internal */ _cells = new Map<string, CellData>()
 	/** @internal */ _maxRow = 0
 	/** @internal */ _maxCol = 0
+	/** @internal Última fila ocupada por addRow(), aunque estuviera vacía: reserva su sitio. */
+	_reservedRow = 0
 
 	constructor(name: string) {
 		this.name = name
@@ -77,13 +79,29 @@ export class Sheet {
 		}
 		const key = `${row},${col}`
 		if (cell.value == null && !cell.formula) {
-			this._cells.delete(key)
+			// Si la celda borrada era la que definía el máximo, las dimensiones se recalculan.
+			if (this._cells.delete(key) && (row === this._maxRow || col === this._maxCol)) this._recomputeBounds()
 			return this
 		}
 		this._cells.set(key, cell)
 		if (row > this._maxRow) this._maxRow = row
 		if (col > this._maxCol) this._maxCol = col
 		return this
+	}
+
+	/** @internal Recalcula rowCount/colCount a partir de las celdas pobladas y las filas reservadas. */
+	_recomputeBounds(): void {
+		let maxRow = this._reservedRow
+		let maxCol = 0
+		for (const key of this._cells.keys()) {
+			const sep = key.indexOf(',')
+			const r = +key.slice(0, sep)
+			const c = +key.slice(sep + 1)
+			if (r > maxRow) maxRow = r
+			if (c > maxCol) maxCol = c
+		}
+		this._maxRow = maxRow
+		this._maxCol = maxCol
 	}
 
 	/** Añade una fila al final. Los huecos se indican con null/undefined. */
@@ -93,6 +111,7 @@ export class Sheet {
 			if (v != null) this.setCellAt(row, i + 1, v)
 		})
 		if (row > this._maxRow) this._maxRow = row // cuenta también filas vacías
+		this._reservedRow = row
 		return this
 	}
 
@@ -155,6 +174,8 @@ export class Sheet {
 	/**
 	 * Datos como array de objetos usando una fila como cabecera.
 	 * Cabeceras vacías usan la letra de columna. Filas totalmente vacías se omiten.
+	 * Una cabecera repetida recibe el sufijo `_2`, `_3`… hasta ser única, para que
+	 * ninguna columna se pierda al pisar a otra con el mismo nombre.
 	 */
 	toObjects({
 		headerRow = 1,
@@ -162,9 +183,14 @@ export class Sheet {
 	}: { headerRow?: number } & DenseOptions = {}): Record<string, CellValue>[] {
 		this._checkDense(maxCells)
 		const headers: string[] = []
+		const used = new Set<string>()
 		for (let c = 1; c <= this._maxCol; c++) {
 			const v = this.cellAt(headerRow, c)
-			headers.push(v == null ? colToName(c) : String(v))
+			const base = v == null ? colToName(c) : String(v)
+			let header = base
+			for (let n = 2; used.has(header); n++) header = `${base}_${n}`
+			used.add(header)
+			headers.push(header)
 		}
 		const out: Record<string, CellValue>[] = []
 		for (let r = headerRow + 1; r <= this._maxRow; r++) {

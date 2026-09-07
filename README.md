@@ -146,6 +146,10 @@ class Sheet {
 	toObjects(opts?: { headerRow?: number; maxCells?: number }): Record<string, CellValue>[]
 }
 
+// rowCount/colCount track the occupied range and shrink when the outermost cell is cleared;
+// rows appended with addRow() keep their place even when empty.
+// toObjects() suffixes repeated headers (_2, _3, …) so no column is lost.
+
 read(data: Buffer | Uint8Array, opts?: ReadOptions): Workbook
 readFile(path: string, opts?: ReadOptions): Workbook
 
@@ -184,6 +188,8 @@ When reading files, cells formatted as Excel dates (built-in or custom date form
 
 Formulas are stored the way OOXML stores them, without the leading `=` you would type in Excel. A leading `=` is accepted and stripped, so `{ formula: '=SUM(A1:B1)' }` and `{ formula: 'SUM(A1:B1)' }` are equivalent and `sheet.formula()` always returns `SUM(A1:B1)`. A formula that is only `=` throws a `TypeError`.
 
+Shared formulas (the ones Excel writes when a formula is dragged across a range) are reconstructed on read: every dependent cell gets the master formula with its relative references shifted, so `sheet.formula()` returns a complete formula for each cell. Files whose elements carry a namespace prefix (`<x:row>`, as produced by Open XML SDK and other .NET tools) are read like any other.
+
 ---
 
 ## Supported
@@ -217,6 +223,7 @@ Writing a workbook throws an error if:
 - A cell contains `NaN` or `Infinity`, since Excel cannot represent those values.
 - A cell contains an invalid `Date` (e.g. `new Date(NaN)`).
 - A cell's coordinates fall outside Excel's real grid (rows 1–1,048,576, columns A–XFD).
+- A cell contains a `Date` before 1899-12-30, which Excel cannot display (it would render as `#####`).
 - The workbook contains no worksheets.
 
 Reading a workbook throws a descriptive error instead of silently producing corrupt or incorrect data if:
@@ -224,6 +231,7 @@ Reading a workbook throws a descriptive error instead of silently producing corr
 - The `.xlsx` container is not a valid ZIP, is truncated, has a corrupt CRC, contains duplicate parts, or requires ZIP64 (>4 GB entries), which minixlsx doesn't support.
 - The archive would decompress beyond the configured budget (a "zip bomb"-style archive). Each entry is capped at 1 GiB, each XML part at 256 MiB, and the whole archive at `maxDecompressedSize` (default 1 GiB). Declared sizes are not trusted: the limit is enforced on the actual inflated output.
 - A cell reference, sheet name, date value, or XML character reference is malformed, or an element is left unclosed.
+- A `<row r>` is not a valid row number, a cell's `r` does not belong to the row that contains it, or a shared-string index points past the table.
 
 ### Hardening against untrusted files
 
@@ -237,7 +245,7 @@ minixlsx is designed to be safe to point at files uploaded by third parties:
 
 ### Sheet names
 
-Sheet name rules (empty name, >31 characters, invalid characters, case-insensitive duplicates) are centralized and shared by every code path that produces a `Sheet`: `Workbook.addSheet`, reading, and writing (writing re-checks defensively, since `Workbook.sheets` is a mutable array).
+Sheet name rules (empty name, >31 characters, invalid characters, case-insensitive duplicates) are centralized and shared by every code path that produces a `Sheet`: `Workbook.addSheet`, reading, and writing (writing re-checks defensively, since `Workbook.sheets` is a mutable array). `Workbook.sheet(name)` is case-insensitive too, matching Excel and the uniqueness rule. The errors thrown by these checks can be told apart from other errors with the exported `isSheetNameError(err)` guard, which also exposes the broken `rule`.
 
 By default, `read()`/`readFile()` abort with a descriptive error the moment they encounter an invalid sheet name in the file — the error names the sheet's index, its name, and which specific rule was broken (`empty`, `too-long`, `invalid-chars`, or `duplicate`). Names are never silently renamed or sanitized.
 

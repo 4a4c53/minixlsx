@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { read } from '#minixlsx/index'
+import { read, Workbook } from '#minixlsx/index'
+import { stripElementPrefixes } from '#minixlsx/reader'
 import { zipSync } from '#minixlsx/zip'
 
 import type { CellValue } from '#minixlsx/index'
@@ -24,9 +25,11 @@ describe('tipos de celda al leer', () => {
 		assert.equal(readA1(xml, { sharedStringsXml: SST }), 'compartida')
 	})
 
-	test('t="s" con índice fuera de rango devuelve null en vez de undefined', () => {
-		const xml = worksheet('<row r="1"><c r="A1" t="s"><v>99</v></c></row>')
-		assert.equal(readA1(xml, { sharedStringsXml: SST }), null)
+	test('t="s" con índice fuera de rango o no numérico es un archivo corrupto', () => {
+		const fuera = worksheet('<row r="1"><c r="A1" t="s"><v>99</v></c></row>')
+		assert.throws(() => readA1(fuera, { sharedStringsXml: SST }), /fuera de rango en A1 \(hoja "S"\): "99"/)
+		const noNum = worksheet('<row r="1"><c r="A1" t="s"><v>abc</v></c></row>')
+		assert.throws(() => readA1(noNum, { sharedStringsXml: SST }), /fuera de rango/)
 	})
 
 	test('t="str" devuelve el resultado cacheado de una fórmula como texto', () => {
@@ -197,5 +200,131 @@ describe('contenedores no válidos', () => {
 	test('un libro sin hojas se rechaza', () => {
 		const workbookXml = `${XML_DECL}<workbook xmlns="${NS}" xmlns:r="${NSR}"><sheets/></workbook>`
 		assert.throws(() => read(buildXlsx({ workbookXml, sheetXml: worksheet('') })), /no contiene hojas/)
+	})
+})
+
+describe('elementos con prefijo de namespace', () => {
+	// Open XML SDK y otras herramientas .NET escriben `<x:worksheet xmlns:x="…">` con todos los
+	// elementos prefijados. Antes el lector devolvía una hoja vacía sin error.
+	const PREFIXED_WORKBOOK =
+		`${XML_DECL}<x:workbook xmlns:x="${NS}" xmlns:r="${NSR}">` +
+		'<x:sheets><x:sheet name="S" sheetId="1" r:id="rId1"/></x:sheets></x:workbook>'
+	const PREFIXED_SHEET =
+		`${XML_DECL}<x:worksheet xmlns:x="${NS}"><x:sheetData>` +
+		'<x:row r="1"><x:c r="A1"><x:v>42</x:v></x:c><x:c r="B1" t="s"><x:v>0</x:v></x:c>' +
+		'<x:c r="C1" t="inlineStr"><x:is><x:t>en línea</x:t></x:is></x:c></x:row>' +
+		'</x:sheetData></x:worksheet>'
+	const PREFIXED_SST = `${XML_DECL}<x:sst xmlns:x="${NS}" count="1" uniqueCount="1"><x:si><x:t>compartida</x:t></x:si></x:sst>`
+
+	test('lee libros cuyos elementos llevan prefijo de namespace', () => {
+		const wb = read(
+			buildXlsx({ workbookXml: PREFIXED_WORKBOOK, sheetXml: PREFIXED_SHEET, sharedStringsXml: PREFIXED_SST }),
+		)
+		const s = wb.sheet('S')
+		assert.ok(s)
+		assert.deepEqual(s.toRows(), [[42, 'compartida', 'en línea']])
+	})
+
+	test('los prefijos se quitan solo de los elementos, no de los atributos', () => {
+		assert.equal(
+			stripElementPrefixes('<x:c r="A1" xr:uid="u" t="s"><x:v>0</x:v></x:c>'),
+			'<c r="A1" xr:uid="u" t="s"><v>0</v></c>',
+		)
+		// Un `:` fuera de una etiqueta (texto, declaraciones, instrucciones de proceso) se respeta.
+		assert.equal(
+			stripElementPrefixes('<?xml version="1.0"?><t>hora: 10:30</t>'),
+			'<?xml version="1.0"?><t>hora: 10:30</t>',
+		)
+	})
+})
+
+describe('referencias de fila y celda corruptas', () => {
+	test('un <row r> no numérico o fuera del rango de Excel se rechaza nombrando la hoja', () => {
+		assert.throws(
+			() => readA1(worksheet('<row r="abc"><c r="A1"><v>1</v></c></row>')),
+			/Fila inválida en la hoja "S": r="abc"/,
+		)
+		assert.throws(
+			() => readA1(worksheet('<row r="0"><c r="A1"><v>1</v></c></row>')),
+			/Fila inválida en la hoja "S": r="0"/,
+		)
+		assert.throws(() => readA1(worksheet('<row r="1048577"><c><v>1</v></c></row>')), /Fila inválida/)
+	})
+
+	test('una celda cuya referencia no coincide con su <row> se rechaza', () => {
+		const xml = worksheet('<row r="1"><c r="A5"><v>1</v></c></row>')
+		assert.throws(() => readA1(xml), /La celda "A5" no pertenece a la fila 1 de la hoja "S"/)
+	})
+
+	test('una referencia de celda sin número de fila toma la fila del <row>', () => {
+		assert.equal(readA1(worksheet('<row r="1"><c r="A"><v>7</v></c></row>')), 7)
+	})
+
+	test('las filas y celdas sin atributo r se numeran de forma correlativa', () => {
+		const wb = read(
+			buildXlsx({
+				workbookXml: workbook(),
+				sheetXml: worksheet('<row><c><v>1</v></c><c><v>2</v></c></row><row><c><v>3</v></c></row>'),
+			}),
+		)
+		assert.deepEqual(wb.sheet('S')?.toRows(), [
+			[1, 2],
+			[3, null],
+		])
+	})
+})
+
+describe('fórmulas compartidas', () => {
+	// Excel escribe la fórmula solo en la celda maestra; las dependientes llevan
+	// `<f t="shared" si="N"/>` vacío y se obtienen desplazando las referencias relativas.
+	const readSheet = (rows: string) => {
+		const s = read(buildXlsx({ workbookXml: workbook(), sheetXml: worksheet(rows) })).sheet('S')
+		assert.ok(s)
+		return s
+	}
+
+	test('las celdas dependientes reciben la fórmula maestra desplazada', () => {
+		const s = readSheet(
+			'<row r="1"><c r="A1"><f t="shared" ref="A1:A3" si="0">B1*2+$B$1</f><v>2</v></c></row>' +
+				'<row r="2"><c r="A2"><f t="shared" si="0"/><v>4</v></c></row>' +
+				'<row r="3"><c r="A3"><f t="shared" si="0"/><v>6</v></c></row>',
+		)
+		assert.equal(s.formula('A1'), 'B1*2+$B$1')
+		assert.equal(s.formula('A2'), 'B2*2+$B$1')
+		assert.equal(s.formula('A3'), 'B3*2+$B$1')
+		assert.deepEqual(
+			s.toRows().map((r) => r[0]),
+			[2, 4, 6],
+		) // los valores cacheados se conservan
+	})
+
+	test('el desplazamiento cubre filas y columnas y varios grupos si', () => {
+		const s = readSheet(
+			'<row r="1"><c r="A1"><f t="shared" ref="A1:B2" si="0">C1</f></c><c r="B1"><f t="shared" si="0"/></c>' +
+				'<c r="D1"><f t="shared" ref="D1:D2" si="1">SUM(A:A)</f></c></row>' +
+				'<row r="2"><c r="A2"><f t="shared" si="0"/></c><c r="B2"><f t="shared" si="0"/></c>' +
+				'<c r="D2"><f t="shared" si="1"/></c></row>',
+		)
+		assert.equal(s.formula('B1'), 'D1')
+		assert.equal(s.formula('A2'), 'C2')
+		assert.equal(s.formula('B2'), 'D2')
+		assert.equal(s.formula('D2'), 'SUM(A:A)')
+	})
+
+	test('una dependiente sin maestra conocida conserva el valor y queda sin fórmula', () => {
+		const s = readSheet('<row r="2"><c r="A2"><f t="shared" si="7"/><v>4</v></c></row>')
+		assert.equal(s.cell('A2'), 4)
+		assert.equal(s.formula('A2'), null)
+	})
+
+	test('las fórmulas compartidas sobreviven a la reescritura como fórmulas normales', () => {
+		const s = readSheet(
+			'<row r="1"><c r="A1"><f t="shared" ref="A1:A2" si="0">B1*2</f><v>2</v></c></row>' +
+				'<row r="2"><c r="A2"><f t="shared" si="0"/><v>4</v></c></row>',
+		)
+		const wb = new Workbook()
+		wb.addSheet('S').setCell('A2', { formula: s.formula('A2'), value: s.cell('A2') })
+		const reread = read(wb.toBuffer()).sheet('S')
+		assert.equal(reread?.formula('A2'), 'B2*2')
 	})
 })

@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 
+import { shiftFormula } from '#minixlsx/formula'
 import { isSheetNameError } from '#minixlsx/sheet-name'
-import { nameToCol, serialToDate } from '#minixlsx/utils'
+import { colToName, MAX_ROWS, nameToCol, serialToDate } from '#minixlsx/utils'
 import { Workbook } from '#minixlsx/workbook'
 import { attr, decodeText, elements, firstElement, stripElements, unesc } from '#minixlsx/xml'
 import { MAX_TOTAL_SIZE, unzipSync } from '#minixlsx/zip'
@@ -54,6 +55,18 @@ function isDateFormatCode(code: string): boolean {
 		.replace(/\[[^\]]*\]/g, '')
 		.replace(/\\./g, '')
 	return /[ymdhs]/i.test(stripped)
+}
+
+// Algunos productores (Open XML SDK, herramientas .NET) prefijan los elementos con el
+// namespace (`<x:worksheet>`, `<x:row>`). Los helpers de xml.ts buscan nombres sin prefijo,
+// así que cada parte se normaliza una vez al cargarla. Solo se tocan los nombres de elemento;
+// los atributos (`r:id`, `xmlns:x`) se conservan. El patrón no tiene cuantificadores anidados:
+// una pasada lineal.
+const PREFIXED_ELEMENT = /<(\/?)[A-Za-z_][\w.-]*:(?=[A-Za-z_])/g
+
+/** @internal Elimina el prefijo de namespace de todas las etiquetas de apertura y cierre. */
+export function stripElementPrefixes(xml: string): string {
+	return xml.replace(PREFIXED_ELEMENT, '<$1')
 }
 
 function dirname(p: string): string {
@@ -132,35 +145,55 @@ function parseDateStyles(xml: string | null): Set<number> {
 function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set<number>, epoch1904: boolean): void {
 	const sheetData = firstElement(xml, 'sheetData')?.inner ?? ''
 	let lastRow = 0
+	// Fórmulas compartidas: la maestra (con texto) por `si`, con su posición, para derivar las dependientes.
+	const sharedFormulas = new Map<string, { formula: string; row: number; col: number }>()
 
 	for (const row of elements(sheetData, 'row')) {
 		const rAttr = attr(row.attrs, 'r')
-		const rowNum = rAttr ? +rAttr : lastRow + 1
+		let rowNum = lastRow + 1
+		if (rAttr != null) {
+			rowNum = /^\d+$/.test(rAttr) ? +rAttr : Number.NaN
+			if (!(rowNum >= 1 && rowNum <= MAX_ROWS)) {
+				throw new Error(`Fila inválida en la hoja "${sheet.name}": r="${rAttr}"`)
+			}
+		}
 		lastRow = rowNum
 
 		let lastCol = 0
 		for (const { attrs, inner } of elements(row.inner, 'c')) {
-			const ref = attr(attrs, 'r')
+			const rawRef = attr(attrs, 'r')
 			let col: number
-			if (ref) {
-				const colMatch = /^[A-Za-z]+/.exec(ref)
-				if (!colMatch) throw new Error(`Referencia de celda inválida en el XML: "${ref}"`)
-				col = nameToCol(colMatch[0])
+			if (rawRef != null) {
+				const m = /^([A-Za-z]+)(\d*)$/.exec(rawRef)
+				if (!m) throw new Error(`Referencia de celda inválida en la hoja "${sheet.name}": "${rawRef}"`)
+				col = nameToCol(m[1])
+				// Excel no lo produce, pero un archivo manipulado puede situar `<c r="A5">` dentro de
+				// `<row r="1">`; antes se tomaba la fila del <row> y se ignoraba la de la celda.
+				if (m[2] && +m[2] !== rowNum) {
+					throw new Error(`La celda "${rawRef}" no pertenece a la fila ${rowNum} de la hoja "${sheet.name}"`)
+				}
 			} else {
 				col = lastCol + 1
 			}
 			lastCol = col
+			const ref = rawRef ?? colToName(col) + rowNum
 
 			const type = attr(attrs, 't') ?? 'n'
 			const style = +(attr(attrs, 's') ?? -1)
 			// Un `<v/>` o `<v></v>` vacío (openpyxl lo escribe en fórmulas sin valor cacheado)
 			// equivale a no tener valor: no debe convertirse en 0 ni en el shared string 0.
 			const vText = firstElement(inner, 'v')?.inner || null
-			const fText = firstElement(inner, 'f')?.inner ?? null
+			const f = firstElement(inner, 'f')
 
 			let value: CellValue = null
 			if (type === 's') {
-				value = vText != null ? (sst[+vText] ?? null) : null
+				if (vText != null) {
+					const idx = /^\d+$/.test(vText) ? +vText : Number.NaN
+					if (!(idx < sst.length)) {
+						throw new Error(`Índice de cadena compartida fuera de rango en ${ref} (hoja "${sheet.name}"): "${vText}"`)
+					}
+					value = sst[idx]
+				}
 			} else if (type === 'str' || type === 'e') {
 				value = vText != null ? decodeText(vText) : null
 			} else if (type === 'b') {
@@ -174,7 +207,16 @@ function parseSheetXml(xml: string, sheet: Sheet, sst: string[], dateStyles: Set
 				value = dateStyles.has(style) ? serialToDate(n, epoch1904) : n
 			}
 
-			const formula = fText?.length ? unesc(fText) : null
+			let formula = f?.inner.length ? unesc(f.inner) : null
+			if (f && attr(f.attrs, 't') === 'shared') {
+				const si = attr(f.attrs, 'si') ?? ''
+				if (formula) {
+					sharedFormulas.set(si, { col, formula, row: rowNum })
+				} else {
+					const master = sharedFormulas.get(si)
+					if (master) formula = shiftFormula(master.formula, rowNum - master.row, col - master.col)
+				}
+			}
 			if (value != null || formula) {
 				sheet.setCellAt(rowNum, col, formula ? { value, formula } : value)
 			}
@@ -201,7 +243,7 @@ export function read(data: Buffer | Uint8Array, opts: ReadOptions = {}): Workboo
 		if (part.length > MAX_PART_SIZE) {
 			throw new Error(`La parte "${name}" supera el tamaño máximo admitido (${MAX_PART_SIZE} bytes)`)
 		}
-		return part.toString('utf8')
+		return stripElementPrefixes(part.toString('utf8'))
 	}
 
 	const rootXml = getXml('_rels/.rels')

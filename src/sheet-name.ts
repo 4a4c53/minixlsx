@@ -11,13 +11,19 @@ export interface SheetNameError extends Error {
 	rule: SheetNameRule
 }
 
+// Marca no enumerable que solo llevan los errores creados aquí. Antes bastaba con que
+// cualquier Error tuviera una propiedad `rule` para pasar por error de nombre de hoja.
+const BRAND: unique symbol = Symbol('minixlsx.SheetNameError')
+
+/** Indica si `err` es un error de validación de nombre de hoja producido por minixlsx. */
 export function isSheetNameError(err: unknown): err is SheetNameError {
-	return err instanceof Error && 'rule' in err
+	return err instanceof Error && (err as { [BRAND]?: true })[BRAND] === true
 }
 
 function ruleError(rule: SheetNameRule, ErrorClass: new (message: string) => Error, message: string): SheetNameError {
 	const err = new ErrorClass(message) as SheetNameError
 	err.rule = rule
+	Object.defineProperty(err, BRAND, { value: true })
 	return err
 }
 

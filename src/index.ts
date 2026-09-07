@@ -1,5 +1,6 @@
 export { type InvalidSheetNamesMode, MAX_PART_SIZE, type ReadOptions, read, readFile } from '#minixlsx/reader'
 export { type CellInput, type CellValue, DEFAULT_MAX_CELLS, type DenseOptions, Sheet } from '#minixlsx/sheet'
+export { isSheetNameError, type SheetNameError, type SheetNameRule } from '#minixlsx/sheet-name'
 export { colToName, dateToSerial, MAX_COLS, MAX_ROWS, nameToCol, parseRef, serialToDate } from '#minixlsx/utils'
 export { Workbook } from '#minixlsx/workbook'
 export { MAX_ENTRY_SIZE, MAX_TOTAL_SIZE } from '#minixlsx/zip'

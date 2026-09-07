@@ -138,6 +138,20 @@ describe('validaciones y edición', () => {
 		assert.throws(() => s.setCell('A1', Number.POSITIVE_INFINITY), TypeError)
 	})
 
+	test('una fecha anterior a 1899-12-30 se rechaza al escribir en vez de salir como #####', () => {
+		const wb = new Workbook()
+		const s = wb.addSheet('X')
+		s.setCell('B2', new Date(1899, 11, 29))
+		assert.throws(() => wb.toBuffer(), /La celda B2 contiene una fecha anterior a 1899-12-30/)
+		s.setCell('B2', { formula: 'DATE(1850,1,1)', value: new Date(1850, 0, 1) })
+		assert.throws(() => wb.toBuffer(), RangeError)
+		// 1899-12-30 es el serial 0: el primer día que Excel puede mostrar.
+		s.setCell('B2', new Date(1899, 11, 30))
+		const back = read(wb.toBuffer()).sheet('X')?.cell('B2')
+		assert.ok(back instanceof Date)
+		assert.equal(back.getTime(), new Date(1899, 11, 30).getTime())
+	})
+
 	test('libro sin hojas no se puede serializar', () => {
 		assert.throws(() => new Workbook().toBuffer(), /al menos una hoja/)
 	})
