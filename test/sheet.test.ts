@@ -103,6 +103,35 @@ describe('acceso a celdas y fórmulas', () => {
 		assert.equal(s.rowCount, 1) // sigue ocupando sitio
 	})
 
+	test('un = inicial se acepta y se elimina: la fórmula queda como la almacena OOXML', () => {
+		const s = newSheet()
+		s.setCell('A1', { formula: '=SUM(B1:C1)', value: 3 })
+		assert.equal(s.formula('A1'), 'SUM(B1:C1)')
+		s.setCell('A2', { formula: 'SUM(B1:C1)' })
+		assert.equal(s.formula('A2'), 'SUM(B1:C1)')
+		// Solo se elimina un =; el resto de la cadena se respeta tal cual.
+		s.setCell('A3', { formula: '=A1=B1' })
+		assert.equal(s.formula('A3'), 'A1=B1')
+	})
+
+	test('una fórmula que solo contiene = se rechaza', () => {
+		assert.throws(() => newSheet().setCell('A1', { formula: '=' }), TypeError)
+	})
+
+	test('una fórmula que no es una cadena se rechaza', () => {
+		assert.throws(() => newSheet().setCell('A1', { formula: 42 as unknown as string }), TypeError)
+	})
+
+	test('una fórmula vacía, null o undefined equivale a no tener fórmula', () => {
+		const s = newSheet()
+		s.setCell('A1', { formula: '', value: 1 })
+		s.setCell('A2', { formula: null, value: 2 })
+		s.setCell('A3', { formula: undefined, value: 3 })
+		assert.equal(s.formula('A1'), null)
+		assert.equal(s.formula('A2'), null)
+		assert.equal(s.formula('A3'), null)
+	})
+
 	test('sobrescribir con un valor plano elimina la fórmula previa', () => {
 		const s = newSheet()
 		s.setCell('A1', { formula: 'SUM(B1:C1)', value: 3 })
