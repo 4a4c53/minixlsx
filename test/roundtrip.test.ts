@@ -72,6 +72,15 @@ describe('ida y vuelta de libros', () => {
 		assert.equal(s2.cell('C1'), 3) // valor cacheado
 	})
 
+	test('una fórmula escrita con = inicial no llega al XML (Excel pediría reparar el archivo)', () => {
+		const wb = new Workbook()
+		wb.addSheet('Calc').setCell('A1', { formula: '=SUM(1,2)', value: 3 })
+		const xml = unzipSync(wb.toBuffer()).get('xl/worksheets/sheet1.xml')?.toString('utf8') ?? ''
+		assert.match(xml, /<f>SUM\(1,2\)<\/f>/)
+		assert.doesNotMatch(xml, /<f>=/)
+		assert.equal(getSheet(read(wb.toBuffer()), 'Calc').formula('A1'), 'SUM(1,2)')
+	})
+
 	test('varias hojas y acceso por índice o nombre', () => {
 		const wb = new Workbook()
 		wb.addSheet('Primera').addRow([1])

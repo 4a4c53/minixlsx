@@ -186,6 +186,8 @@ interface ReadOptions {
 
 When reading files, cells formatted as Excel dates (built-in or custom date formats) are automatically converted to JavaScript `Date` objects.
 
+Formulas are stored the way OOXML stores them, without the leading `=` you would type in Excel. A leading `=` is accepted and stripped, so `{ formula: '=SUM(A1:B1)' }` and `{ formula: 'SUM(A1:B1)' }` are equivalent and `sheet.formula()` always returns `SUM(A1:B1)`. A formula that is only `=` throws a `TypeError`.
+
 Shared formulas (the ones Excel writes when a formula is dragged across a range) are reconstructed on read: every dependent cell gets the master formula with its relative references shifted, so `sheet.formula()` returns a complete formula for each cell. Files whose elements carry a namespace prefix (`<x:row>`, as produced by Open XML SDK and other .NET tools) are read like any other.
 
 ---

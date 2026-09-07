@@ -34,10 +34,10 @@ la rama. Ordenados por impacto en usuarios reales.
 
 ## Escritura
 
-- [ ] **Fórmula con `=` inicial se escribe tal cual.** *Verificado.* `{ formula: '=SUM(1,2)' }`
-  genera `<f>=SUM(1,2)</f>` y Excel pide reparar el archivo. Es el error de uso más
-  habitual. **Propuesta:** eliminar un `=` inicial en `setCellAt` (o rechazarlo con
-  `TypeError`) y documentarlo.
+- [x] **Fórmula con `=` inicial se escribe tal cual.** *Verificado.* `{ formula: '=SUM(1,2)' }`
+  generaba `<f>=SUM(1,2)</f>` y Excel pedía reparar el archivo. Corregido en la rama
+  `claude/fix-formula-leading-equals`: `setCellAt` elimina exactamente un `=` inicial,
+  rechaza `'='` a secas con `TypeError` y lo documenta en el README.
 - [x] **Fórmula con valor cacheado `Date` se descarta en silencio.** *Verificado.* Corregido en PR #2 (rama `claude/test-coverage-analysis-e3dw9m`, commit `d838aef`).
   `{ formula: 'TODAY()', value: new Date() }` escribe solo `<f>` sin `<v>` ni estilo de
   fecha. **Propuesta:** serializar el serial con `s="1"`/`s="2"` como en las celdas sin
